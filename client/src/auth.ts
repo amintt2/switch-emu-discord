@@ -15,6 +15,18 @@ export function dansDiscord() {
 export async function seConnecter(): Promise<Identite> {
   const cfg = await api<{ clientId: string | null; browserMode: boolean }>('/api/config');
 
+  // « Ouvrir dans le navigateur » depuis l'Activité : un lien à usage unique, valable 2 minutes.
+  const passage = new URLSearchParams(location.search).get('passage');
+  if (passage && !dansDiscord()) {
+    history.replaceState(null, '', location.pathname);  // le lien ne sert qu'une fois : on l'efface de l'adresse
+    const res = await api<{ session: string; user: Utilisateur }>('/api/passage/echange', {
+      method: 'POST',
+      body: JSON.stringify({ passage }),
+    });
+    setSession(res.session);
+    return { user: res.user, mode: 'navigateur', sdk: null };
+  }
+
   if (dansDiscord()) {
     if (!cfg.clientId) throw new Error('DISCORD_CLIENT_ID manquant côté serveur');
     const sdk = new DiscordSDK(cfg.clientId);

@@ -7,7 +7,9 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log"
+	"regexp"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -33,17 +35,25 @@ func (h *hebergement) transmettre(o ordreServeur) {
 
 // lienRelais est la connexion de l'hôte à un relais.
 type lienRelais struct {
-	url   string
-	amis  atomic.Int32
-	file  chan []byte // images à envoyer ; pleine = l'envoi ne suit pas
-	texte chan []byte
+	url         string
+	amis        atomic.Int32
+	file        chan []byte // images à envoyer ; pleine = l'envoi ne suit pas
+	texte       chan []byte
+	jetees      atomic.Int32 // images jetées parce que l'envoi ne suivait pas
+	reconnexion atomic.Int32
 }
+
+const (
+	battementRelais = 10 * time.Second // l'agent envoie un battement, le relais répond
+	silenceMax      = 25 * time.Second // rien reçu du relais depuis ce temps : la connexion est morte
+)
 
 type depsHebergement struct {
 	exeCapteur  string
 	capture     Capture
 	jetonFrais  func(ctx context.Context, salle string) (string, error) // redemande un jeton au serveur
 	signalerErr func(salle, texte string)
+	diag        func(quoi string, v map[string]any) // mesures envoyées au journal du serveur
 	bus         busManettes // nil si ViGEmBus n'est pas installé
 }
 
@@ -90,7 +100,7 @@ func (h *hebergement) tourner(ctx context.Context, o ordreServeur, cfg Config, d
 
 	var liens []*lienRelais
 	var wg sync.WaitGroup
-	premierJeton := o.Jeton
+	premierJeton, dernierJeton := o.Jeton, o.Jeton
 	var muJeton sync.Mutex
 	jeton := func(ctx context.Context) (string, error) {
 		muJeton.Lock()
@@ -100,7 +110,16 @@ func (h *hebergement) tourner(ctx context.Context, o ordreServeur, cfg Config, d
 			premierJeton = ""
 			return j, nil
 		}
-		return d.jetonFrais(ctx, o.Salle)
+		j, err := d.jetonFrais(ctx, o.Salle)
+		if err == nil {
+			dernierJeton = j
+			return j, nil
+		}
+		// Serveur injoignable : le jeton précédent (valable 2 h) suffit pour revenir sur le relais.
+		if dernierJeton != "" {
+			return dernierJeton, nil
+		}
+		return "", err
 	}
 	for _, u := range o.Relais {
 		if !cfg.relaisAutorise(u) {
@@ -119,8 +138,20 @@ func (h *hebergement) tourner(ctx context.Context, o ordreServeur, cfg Config, d
 
 	envoyees, debut := 0, time.Now()
 	images := k.images
+	mesure := time.NewTicker(time.Minute)
+	defer mesure.Stop()
+	dernieres, idrAvant := 0, 0
 	for {
 		select {
+		case <-mesure.C:
+			v := map[string]any{"ips": float64(envoyees-dernieres) / 60, "cles": k.imagesCles() - idrAvant}
+			for i, l := range liens {
+				v[fmt.Sprintf("amis%d", i)] = l.amis.Load()
+				v[fmt.Sprintf("jetees%d", i)] = l.jetees.Swap(0)
+				v[fmt.Sprintf("reco%d", i)] = l.reconnexion.Swap(0)
+			}
+			dernieres, idrAvant = envoyees, k.imagesCles()
+			d.diag("hebergement", v)
 		case <-ctx.Done():
 			wg.Wait()
 			log.Printf("hébergement de la salle %s : arrêt", o.Salle)
@@ -155,6 +186,7 @@ func (h *hebergement) tourner(ctx context.Context, o ordreServeur, cfg Config, d
 				select {
 				case l.file <- paquet:
 				default:
+					l.jetees.Add(1)
 					k.demanderIDR() // ce relais ne suit pas : on saute jusqu'à la prochaine image clé
 				}
 			}
@@ -165,10 +197,21 @@ func (h *hebergement) tourner(ctx context.Context, o ordreServeur, cfg Config, d
 	}
 }
 
+var reJeton = regexp.MustCompile(`jeton=[^\s"&]+`)
+
+// sansJeton retire les jetons des messages d'erreur avant de les écrire dans le journal.
+func sansJeton(err error) string {
+	if err == nil {
+		return ""
+	}
+	return reJeton.ReplaceAllString(err.Error(), "jeton=…")
+}
+
 // maintenir garde la connexion au relais ouverte (reconnexion avec un jeton neuf si elle tombe).
 func (l *lienRelais) maintenir(ctx context.Context, jeton func(context.Context) (string, error), k *capteur, m *manettes) {
-	attente := time.Second
+	attente := 300 * time.Millisecond
 	for ctx.Err() == nil {
+		debut := time.Now()
 		j, err := jeton(ctx)
 		if err == nil {
 			err = l.session(ctx, j, k, m)
@@ -177,20 +220,27 @@ func (l *lienRelais) maintenir(ctx context.Context, jeton func(context.Context) 
 		if ctx.Err() != nil {
 			return
 		}
-		log.Printf("relais %s : %v (nouvel essai dans %s)", l.url, err, attente)
+		// Une connexion qui a tenu un moment : on revient tout de suite, sans attente qui s'allonge.
+		if time.Since(debut) > 20*time.Second {
+			attente = 300 * time.Millisecond
+		}
+		l.reconnexion.Add(1)
+		log.Printf("relais %s : %s (nouvel essai dans %s)", l.url, sansJeton(err), attente)
 		select {
 		case <-ctx.Done():
 			return
 		case <-time.After(attente):
 		}
-		if attente < 15*time.Second {
+		if attente < 8*time.Second {
 			attente *= 2
 		}
 	}
 }
 
 func (l *lienRelais) session(ctx context.Context, jeton string, k *capteur, man *manettes) error {
-	c, _, err := websocket.Dial(ctx, l.url+"?jeton="+jeton, nil)
+	dctx, annuler := context.WithTimeout(ctx, 10*time.Second)
+	c, _, err := websocket.Dial(dctx, l.url+"?jeton="+jeton, nil)
+	annuler()
 	if err != nil {
 		return err
 	}
@@ -199,6 +249,31 @@ func (l *lienRelais) session(ctx context.Context, jeton string, k *capteur, man 
 	log.Printf("relais %s : connecté", l.url)
 	sctx, stop := context.WithCancel(ctx)
 	defer stop()
+
+	// Battements : si le relais ne répond plus (Wi-Fi coupé, relais redémarré), on se reconnecte vite.
+	var dernierRecu atomic.Int64
+	dernierRecu.Store(time.Now().UnixNano())
+	battement, _ := json.Marshal(map[string]string{"type": "battement"})
+	go func() {
+		t := time.NewTicker(battementRelais)
+		defer t.Stop()
+		for {
+			select {
+			case <-sctx.Done():
+				return
+			case <-t.C:
+				if time.Since(time.Unix(0, dernierRecu.Load())) > silenceMax {
+					log.Printf("relais %s : plus de nouvelles depuis %s, reconnexion", l.url, silenceMax)
+					stop()
+					return
+				}
+				select {
+				case l.texte <- battement:
+				default:
+				}
+			}
+		}
+	}()
 
 	// Écriture : images (binaire) et réponses (texte), avec un délai pour ne jamais bloquer.
 	go func() {
@@ -238,6 +313,7 @@ func (l *lienRelais) session(ctx context.Context, jeton string, k *capteur, man 
 		if err != nil {
 			return err
 		}
+		dernierRecu.Store(time.Now().UnixNano())
 		msg, err := lireMessageAmi(b)
 		if err != nil {
 			continue

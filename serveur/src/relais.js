@@ -8,6 +8,7 @@ import { verifier } from './jetons.js';
 export const MAX_AMIS = 16;
 export const TYPES_AMI = new Set(['ping', 'idr', 'qualite', 'manette']);
 const MAX_TEXTE = 4096;
+const BATTEMENT = JSON.stringify({ type: 'battement' });
 
 export class Relais {
   constructor({ secret }) {
@@ -34,7 +35,7 @@ export class Relais {
       if (s.hote && s.hote !== ws) s.hote.close(4000, 'remplacé par un autre hôte');
       s.hote = ws;
       for (const id of s.amis.keys()) versHote({ type: 'arrivee', de: id });
-      ws.on('message', (d, binaire) => this.depuisHote(s, d, binaire));
+      ws.on('message', (d, binaire) => this.depuisHote(s, d, binaire, ws));
       ws.on('close', () => {
         if (s.hote !== ws) return;
         s.hote = null;
@@ -53,6 +54,8 @@ export class Relais {
       if (binaire || d.length > MAX_TEXTE) return;
       let m;
       try { m = JSON.parse(d); } catch { return; }
+      // Battement : le relais répond lui-même (la page sait ainsi que la connexion est vivante).
+      if (m?.type === 'battement') return ws.send(BATTEMENT);
       if (!m || !TYPES_AMI.has(m.type)) return;
       m.de = id;
       m.uid = uid;  // l'hôte sait toujours qui parle : ce n'est pas l'ami qui le dit
@@ -65,7 +68,7 @@ export class Relais {
     });
   }
 
-  depuisHote(s, d, binaire) {
+  depuisHote(s, d, binaire, hote) {
     const envoyer = (a, charge, opts) => {
       for (const [id, w] of s.amis) {
         if ((a && a !== id) || w.readyState !== 1) continue;
@@ -77,6 +80,7 @@ export class Relais {
     if (!binaire) {
       let m;
       try { m = JSON.parse(d); } catch { return; }
+      if (m?.type === 'battement') return hote?.send(BATTEMENT);
       // L'hôte retire quelqu'un : on ferme ses connexions.
       if (m.type === 'exclure' && typeof m.uid === 'string') {
         for (const w of s.amis.values()) if (w.uidRelais === m.uid) w.close(4003, 'retiré par l’hôte');

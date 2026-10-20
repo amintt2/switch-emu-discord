@@ -43,7 +43,12 @@ func main() {
 	if info, err := os.Stat(cheminJournal()); err == nil && info.Size() > 5<<20 {
 		os.Rename(cheminJournal(), cheminJournal()+".ancien")
 	}
-	if f, err := os.OpenFile(cheminJournal(), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644); err == nil {
+	f, err := os.OpenFile(cheminJournal(), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
+	if err != nil {
+		// Fichier bloqué par un autre programme : un journal à part plutôt que rien du tout.
+		f, err = os.OpenFile(filepath.Join(dossierDonnees(), fmt.Sprintf("agent-%d.log", os.Getpid())), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
+	}
+	if err == nil {
 		log.SetOutput(io.MultiWriter(f, os.Stderr)) // le fichier d'abord : en mode fenêtre, il n'y a pas de console
 	}
 	log.SetFlags(log.Ldate | log.Ltime)

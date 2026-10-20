@@ -9,6 +9,7 @@ import { verifier } from './jetons.js';
 const MAX_AMIS = 16;
 const MAX_TEXTE = 4096;
 const TYPES_AMI = new Set(['ping', 'idr', 'qualite', 'manette']);
+const BATTEMENT = JSON.stringify({ type: 'battement' });
 
 export class Salle {
   constructor(state) {
@@ -55,6 +56,8 @@ export class Salle {
       if (typeof e.data !== 'string' || e.data.length > MAX_TEXTE) return;
       let m;
       try { m = JSON.parse(e.data); } catch { return; }
+      // Battement : le relais répond lui-même (la page sait ainsi que la connexion est vivante).
+      if (m?.type === 'battement') { try { ws.send(BATTEMENT); } catch {} return; }
       if (!m || !TYPES_AMI.has(m.type)) return;
       m.de = id;
       m.uid = uid;
@@ -75,6 +78,7 @@ export class Salle {
     if (typeof d === 'string') {
       let m;
       try { m = JSON.parse(d); } catch { return; }
+      if (m?.type === 'battement') { try { this.hote?.send(BATTEMENT); } catch {} return; }
       // L'hôte retire quelqu'un : on ferme ses connexions.
       if (m.type === 'exclure' && typeof m.uid === 'string') {
         for (const [id, w] of this.amis) if (this.uids.get(id) === m.uid) try { w.close(4003, 'retiré par l’hôte'); } catch {}

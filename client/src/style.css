@@ -24,11 +24,38 @@ h1::before { content: ""; display: inline-block; width: 10px; height: 10px; bord
 .stats b { color: var(--texte); font-weight: 600; }
 .stats.lent b { color: #f5c451; }
 
-main { flex: 1; min-height: 0; display: grid; grid-template-columns: 1fr 260px; gap: 10px; }
-@media (max-width: 760px) { main { grid-template-columns: 1fr; grid-template-rows: auto 1fr; } }
+main { flex: 1; min-height: 0; display: grid; grid-template-columns: minmax(0, 1fr) 260px; grid-template-rows: minmax(0, 1fr); gap: 10px; }
+#app.grand main { grid-template-columns: minmax(0, 1fr); }
+#app.grand #panneau { display: none; }
+@media (max-width: 760px) {
+  main { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto minmax(0, 1fr); }
+  #scene { aspect-ratio: 16 / 9; min-height: 0; }
+}
 
-#scene { position: relative; background: #000; border-radius: var(--rayon); overflow: hidden; display: grid; place-items: center; min-height: 180px; }
-#ecran { width: 100%; height: 100%; object-fit: contain; display: block; }
+/* La vidéo est posée en absolu : elle s'adapte toujours à la scène (sans jamais la déborder ni être coupée). */
+#scene { position: relative; background: #000; border-radius: var(--rayon); overflow: hidden; min-height: 180px; min-width: 0; }
+#ecran { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; display: block; }
+#scene:fullscreen { border-radius: 0; }
+#bandeau { position: absolute; top: 10px; left: 50%; transform: translateX(-50%); max-width: calc(100% - 20px); background: rgba(20, 22, 30, .88); border: 1px solid #f5c45155; color: #f5e0a8; font-size: 13px; padding: 6px 12px; border-radius: 999px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; pointer-events: none; }
+#bandeau[hidden] { display: none; }
+.boutons-scene { position: absolute; right: 8px; bottom: 8px; display: flex; gap: 6px; opacity: .35; transition: opacity .15s; }
+#scene:hover .boutons-scene, .boutons-scene:focus-within { opacity: 1; }
+button.petit { padding: 5px 10px; font-size: 12px; border-radius: 8px; }
+button.actif { outline: 1px solid var(--accent-2); color: #b5e6ff; }
+.outils { display: flex; align-items: center; gap: 6px; }
+button.stats { cursor: pointer; font-weight: 400; }
+
+.debug { position: absolute; top: 8px; left: 8px; width: min(300px, calc(100% - 16px)); max-height: calc(100% - 16px); overflow: auto; background: rgba(12, 13, 18, .9); border: 1px solid var(--bord); border-radius: 10px; padding: 10px; font: 12px/1.35 ui-monospace, "Cascadia Mono", monospace; color: var(--discret); }
+.debug[hidden] { display: none; }
+.debug dl { display: grid; grid-template-columns: auto 1fr; gap: 2px 10px; margin: 0 0 8px; }
+.debug dt { white-space: nowrap; }
+.debug dd { margin: 0; color: var(--texte); text-align: right; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.debug dd.bon { color: var(--ok); }
+.debug dd.moyen { color: #f5c451; }
+.debug dd.mauvais { color: #ff6b7a; }
+.debug canvas { width: 100%; height: auto; display: block; background: rgba(255, 255, 255, .03); border-radius: 6px; }
+.debug .legende { display: flex; flex-wrap: wrap; gap: 4px 10px; margin-top: 6px; }
+.debug .legende span::before { content: ""; display: inline-block; width: 10px; height: 3px; margin-right: 5px; vertical-align: middle; background: var(--c); }
 #voile { position: absolute; inset: 0; display: grid; place-items: center; background: radial-gradient(circle at 50% 40%, #1d2030, #0b0c10); padding: 16px; text-align: center; }
 #voile[hidden] { display: none; }
 .message { max-width: 420px; color: var(--discret); }
@@ -91,3 +118,8 @@ dialog.reglages tr.attente td { color: #f5c451; }
 .jeu { border: 1px solid var(--bord); border-radius: 10px; padding: 10px; display: flex; flex-direction: column; gap: 6px; }
 .jeu select { font: inherit; padding: 7px 8px; border-radius: 8px; background: var(--fond); color: var(--texte); border: 1px solid var(--bord); }
 #jeu-en-cours { color: var(--discret); font-weight: 500; font-size: 14px; margin-left: 6px; }
+@media (max-width: 760px) {
+  .debug { width: min(230px, calc(100% - 16px)); font-size: 10px; padding: 6px; }
+  .debug dl { margin-bottom: 4px; }
+  .boutons-scene { opacity: .8; }
+}
