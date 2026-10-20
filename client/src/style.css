@@ -52,3 +52,25 @@ form.code { display: flex; gap: 6px; }
 input { flex: 1; min-width: 0; font: 600 15px ui-monospace, monospace; letter-spacing: 1px; text-transform: uppercase; padding: 9px 10px; border-radius: 10px; border: 1px solid var(--bord); background: var(--fond); color: var(--texte); }
 
 #toast { position: fixed; left: 50%; bottom: calc(18px + var(--bas)); transform: translateX(-50%); background: #2a1215; border: 1px solid #5c1e25; color: #ffd5d8; padding: 10px 14px; border-radius: 10px; max-width: min(92vw, 460px); }
+
+.manette { border: 1px solid var(--bord); border-radius: 10px; padding: 10px; display: flex; flex-direction: column; gap: 4px; }
+.manette strong { font-size: 14px; }
+.manette p { margin: 0; color: var(--discret); font-size: 13px; }
+.manette details { font-size: 13px; color: var(--discret); }
+.manette summary { cursor: pointer; }
+kbd { font: 600 11px ui-monospace, monospace; border: 1px solid var(--bord); border-bottom-width: 2px; border-radius: 4px; padding: 1px 5px; margin: 0 1px; color: var(--texte); background: var(--fond); }
+
+.manette .alerte { color: #f5c451; }
+dialog.reglages { width: min(640px, 96vw); max-height: 90vh; overflow: auto; background: var(--carte); color: var(--texte); border: 1px solid var(--bord); border-radius: var(--rayon); padding: 16px; }
+dialog.reglages::backdrop { background: rgba(0, 0, 0, .6); }
+dialog.reglages h2 { font-size: 16px; text-transform: none; letter-spacing: 0; color: var(--texte); margin-bottom: 10px; }
+dialog.reglages p { color: var(--discret); font-size: 13px; }
+dialog.reglages select { width: 100%; font: inherit; padding: 8px; border-radius: 8px; background: var(--fond); color: var(--texte); border: 1px solid var(--bord); }
+dialog.reglages table { width: 100%; border-collapse: collapse; margin-top: 8px; font-size: 14px; }
+dialog.reglages td { padding: 4px 6px; border-bottom: 1px solid var(--bord); }
+dialog.reglages td:last-child { text-align: right; }
+dialog.reglages td button { padding: 4px 10px; font-size: 13px; }
+dialog.reglages tr.attente td { color: #f5c451; }
+.onglets, .ligne-boutons { display: flex; gap: 6px; flex-wrap: wrap; margin: 8px 0; }
+.ligne-boutons button { font-size: 13px; padding: 7px 10px; }
+.pied { display: flex; justify-content: flex-end; margin-top: 12px; }

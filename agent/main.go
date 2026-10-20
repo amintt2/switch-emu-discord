@@ -29,6 +29,7 @@ func main() {
 	exeCapteur := flag.String("capteur", "", "chemin de capteur.exe (par défaut : à côté de l'agent)")
 	dejumeler := flag.Bool("dejumeler", false, "oublie le compte lié et redemande un code")
 	dev := flag.Bool("dev", false, "essais en local : accepte un relais en ws://localhost")
+	testManette := flag.Bool("test-manette", false, "branche une manette virtuelle, appuie sur A, vérifie que Windows la voit, puis quitte")
 	flag.Parse()
 	log.SetFlags(log.Ltime)
 
@@ -51,6 +52,17 @@ func main() {
 	defer stop()
 
 	fmt.Printf("Switch EMU — agent %s\n", version)
+	// Manettes virtuelles des amis (pilote ViGEmBus).
+	var bus busManettes
+	if v, err := OpenViGEm(); err != nil {
+		log.Printf("manettes virtuelles indisponibles : %v — installe ViGEmBus pour que tes amis puissent jouer", err)
+	} else {
+		bus = busViGEm{v}
+		defer v.Close()
+	}
+	if *testManette {
+		os.Exit(autoTestManette(bus))
+	}
 	if cfg.Jeton == "" {
 		var jeton, nom string
 		for {
@@ -74,14 +86,14 @@ func main() {
 		}
 		fmt.Printf("PC lié au compte Discord de %s.\n", nom)
 	}
-	controler(ctx, cfg, *chemin, *exeCapteur)
+	controler(ctx, cfg, *exeCapteur, bus)
 }
 
 // controler garde la connexion de contrôle ouverte et exécute les ordres connus du serveur.
-func controler(ctx context.Context, cfg Config, chemin, exeCapteur string) {
+func controler(ctx context.Context, cfg Config, exeCapteur string, bus busManettes) {
 	attente := time.Second
 	for ctx.Err() == nil {
-		err := sessionControle(ctx, cfg, exeCapteur)
+		err := sessionControle(ctx, cfg, exeCapteur, bus)
 		if errors.Is(err, errNonJumele) {
 			log.Printf("le serveur ne reconnaît plus ce PC : relance l'agent avec -dejumeler pour obtenir un nouveau code")
 			return
@@ -103,7 +115,7 @@ func controler(ctx context.Context, cfg Config, chemin, exeCapteur string) {
 
 var errNonJumele = errors.New("agent non jumelé")
 
-func sessionControle(ctx context.Context, cfg Config, exeCapteur string) error {
+func sessionControle(ctx context.Context, cfg Config, exeCapteur string, bus busManettes) error {
 	h := http.Header{}
 	h.Set("Authorization", "Bearer "+cfg.Jeton)
 	c, _, err := websocket.Dial(ctx, urlWS(cfg.Serveur, "/api/agent"), &websocket.DialOptions{HTTPHeader: h})
@@ -127,6 +139,7 @@ func sessionControle(ctx context.Context, cfg Config, exeCapteur string) error {
 	deps := depsHebergement{
 		exeCapteur: exeCapteur,
 		capture:    cfg.Capture,
+		bus:        bus,
 		jetonFrais: func(jctx context.Context, salle string) (string, error) {
 			envoyer(map[string]string{"type": "jeton", "salle": salle})
 			select {
