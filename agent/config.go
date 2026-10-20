@@ -22,6 +22,8 @@ type Config struct {
 	// Ryubing (Ryujinx.exe) et les dossiers où sont rangés les jeux de l'hôte.
 	Ryujinx      string   `json:"ryujinx,omitempty"`
 	DossiersJeux []string `json:"dossiersJeux,omitempty"`
+	// RyubingManuel : ne pas relier soi-même Player2..4 aux manettes des amis (l'hôte s'en occupe).
+	RyubingManuel bool `json:"ryubingManuel,omitempty"`
 
 	dev bool // -dev : accepte un serveur et un relais en ws://localhost
 }

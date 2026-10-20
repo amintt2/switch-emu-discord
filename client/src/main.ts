@@ -10,7 +10,7 @@ import { charger, enregistrer, type Entree, type Reglages } from './reglages.ts'
 interface Participant extends Utilisateur { hote: boolean; place: number }
 interface Place { uid: string; nom: string; local: boolean; absent: boolean }
 interface EtatSalle {
-  salle: { participants: Participant[]; hote: { uid: string; nom: string; absent: boolean } | null; places: (Place | null)[]; jeu: string | null };
+  salle: { participants: Participant[]; hote: { uid: string; nom: string; absent: boolean } | null; places: (Place | null)[]; jeu: string | null; manettes?: number[] };
   moi: { agent: 'en-ligne' | 'absent'; jeux?: { id: string; titre: string }[] };
   flux: Flux | null;
 }
@@ -112,6 +112,10 @@ function afficher() {
       const qui = p.uid === moi.uid ? 'Toi' : p.nom;
       const ou = p.local ? (p.uid === moi.uid ? ' (sur ton PC)' : ' (sur son PC)') : '';
       li.append(el('span', { className: 'nom', textContent: qui + ou + (p.absent ? ' — déconnecté' : '') }));
+      // Manette virtuelle branchée sur le PC de l'hôte : Player N dans Ryubing.
+      if (!p.local && salle.manettes?.includes(n)) {
+        li.append(el('span', { className: 'badge pret', textContent: 'manette prête', title: `Manette J${n} branchée sur le PC de l’hôte (Player ${n} dans Ryubing)` }));
+      }
       if (p.uid === moi.uid) li.append(bouton(p.local ? 'Laisser J1' : 'Quitter', () => prendrePlace(0), true));
     }
     return li;

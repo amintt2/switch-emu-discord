@@ -146,6 +146,8 @@ func (ui *interfaceAgent) action(w http.ResponseWriter, r *http.Request) {
 		a.fermerJeu()
 	case "demarrage":
 		err = reglerDemarrageWindows(req.Valeur == "oui")
+	case "ryubing-auto":
+		err = a.modifier(func(c *Config) { c.RyubingManuel = req.Valeur != "oui" })
 	case "maj-verifier":
 		go a.verifierMaj(context.Background())
 	case "maj-installer":

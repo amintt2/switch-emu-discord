@@ -26,6 +26,8 @@
   button.petit { padding: 4px 9px; font-size: 12px; }
   .actions { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 8px; }
   ul { list-style: none; padding: 0; margin: 6px 0 0; max-height: 220px; overflow: auto; }
+  ul.manettes li { display: flex; gap: 10px; align-items: baseline; padding: 4px 0; }
+  ul.manettes li span:last-child { margin-left: auto; font-size: 12px; }
   li { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 5px 0; border-bottom: 1px solid var(--bord); }
   li:last-child { border-bottom: 0; }
   .code { font: 700 20px ui-monospace, Consolas, monospace; letter-spacing: 2px; }
@@ -38,6 +40,11 @@
 <main>
   <section id="compte"></section>
   <section id="partie"></section>
+  <section id="manettes" hidden>
+    <h2>Manettes des amis</h2>
+    <p class="discret">Dans Ryubing, Player 2 = J2, Player 3 = J3, Player 4 = J4.</p>
+    <ul id="liste-manettes" class="manettes"></ul>
+  </section>
   <section>
     <h2>Émulateur</h2>
     <div id="emu"></div>
@@ -53,6 +60,7 @@
     <h2>Ce PC</h2>
     <div id="pc"></div>
     <label><input type="checkbox" id="demarrage"> Démarrer avec Windows (dans la zone près de l’horloge)</label>
+    <label><input type="checkbox" id="ryubing-auto"> Relier tout seul les manettes des amis dans Ryubing (Player 2 à 4 = J2 à J4)</label>
     <div class="actions"><button class="sec petit" data-a="maj-verifier">Chercher une mise à jour</button><button class="sec petit" data-a="journal">Journal</button><button class="sec petit" data-a="quitter">Quitter</button></div>
   </section>
   <p id="erreur"></p>
@@ -74,6 +82,7 @@ document.addEventListener('click', (e) => {
   if (b) action(b.dataset.a, b.dataset.v || '');
 });
 $('demarrage').onchange = (e) => action('demarrage', e.target.checked ? 'oui' : 'non');
+$('ryubing-auto').onchange = (e) => action('ryubing-auto', e.target.checked ? 'oui' : 'non');
 
 function rendre(e) {
   $('version').textContent = `Agent ${e.version}` + (e.installe ? '' : ' · pas installé');
@@ -112,6 +121,13 @@ function rendre(e) {
     : `<p class="ko"><span class="pastille"></span>ViGEmBus absent : tes amis ne pourront pas jouer. <button class="petit" data-a="vigem">Installer ViGEmBus</button></p>`)
     + (e.maj?.etat ? `<p class="discret">Mises à jour : ${esc(e.maj.etat)} ${e.maj.version ? `<button class="petit" data-a="maj-installer">Installer</button>` : ''}</p>` : '');
   $('demarrage').checked = e.demarrage;
+  $('ryubing-auto').checked = !e.ryubingManuel;
+  // Manettes des amis : qui est sur quelle place (Player N dans Ryubing)
+  const ms = e.manettes || [];
+  $('manettes').hidden = !e.heberge;
+  $('liste-manettes').innerHTML = ms.length
+    ? ms.map((m) => `<li><b>J${m.place}</b> <span>${esc(m.nom || 'place libre')}</span> <span class="${m.branchee ? 'ok' : 'discret'}">${m.branchee ? 'manette branchée' : 'pas de manette'}</span></li>`).join('')
+    : '<li class="discret">Aucun ami n’a encore pris de place.</li>';
 }
 
 async function rafraichir() {

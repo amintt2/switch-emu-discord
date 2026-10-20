@@ -14,11 +14,18 @@ type fauxPad struct {
 func (p *fauxPad) Submit(r XusbReport) error { p.recus = append(p.recus, r); return nil }
 func (p *fauxPad) Unplug() error             { p.debranche = true; return nil }
 
-type fauxBus struct{ pads []*fauxPad }
+type fauxBus struct {
+	pads     []*fauxPad
+	parPlace map[int]*fauxPad
+}
 
-func (b *fauxBus) brancher() (padVirtuel, error) {
+func (b *fauxBus) brancher(place int) (padVirtuel, error) {
 	p := &fauxPad{}
 	b.pads = append(b.pads, p)
+	if b.parPlace == nil {
+		b.parPlace = map[int]*fauxPad{}
+	}
+	b.parPlace[place] = p
 	return p, nil
 }
 
@@ -46,23 +53,65 @@ func TestLireManetteBorne(t *testing.T) {
 	}
 }
 
-func TestJ2J3J4BrancheesDansLOrdre(t *testing.T) {
+func TestUneManetteParPlacePrise(t *testing.T) {
 	m, bus, _ := fabriqueManettes()
-	m.preparer()
-	if len(bus.pads) != 3 {
-		t.Fatalf("%d manettes branchées, attendu 3 (J2, J3, J4)", len(bus.pads))
+	m.definirPlaces(map[string]int{})
+	if len(bus.pads) != 0 {
+		t.Fatal("aucune manette tant que personne ne joue")
 	}
 	m.definirPlaces(map[string]int{"b": 2, "c": 4})
+	if len(bus.pads) != 2 || bus.parPlace[2] == nil || bus.parPlace[4] == nil {
+		t.Fatalf("%d manettes branchées, attendu J2 et J4 seulement", len(bus.pads))
+	}
 	m.appliquer("b", XusbReport{Buttons: 0x1000}, 1)
 	m.appliquer("c", XusbReport{Buttons: 0x2000}, 1)
-	if dernier(bus.pads[0]).Buttons != 0x1000 || dernier(bus.pads[2]).Buttons != 0x2000 {
+	if dernier(bus.parPlace[2]).Buttons != 0x1000 || dernier(bus.parPlace[4]).Buttons != 0x2000 {
 		t.Fatal("chaque joueur doit piloter la manette de sa place")
+	}
+}
+
+func TestIdentifiantParPlace(t *testing.T) {
+	if pidPlace(2) == pidPlace(3) || pidPlace(1) != 0x5301 {
+		t.Fatal("chaque place a son PID")
+	}
+}
+
+func TestManetteGardeeSiDeconnexionDebrancheeSiRetire(t *testing.T) {
+	m, bus, _ := fabriqueManettes()
+	m.definirPlaces(map[string]int{"b": 2})
+	m.appliquer("b", XusbReport{Buttons: 0x1000}, 1)
+	m.definirPlaces(map[string]int{}) // Bob se déconnecte, sa place est libérée
+	pad := bus.parPlace[2]
+	if pad.debranche || dernier(pad) != (XusbReport{}) {
+		t.Fatal("la manette reste branchée, au repos")
+	}
+	m.definirPlaces(map[string]int{"b": 2}) // il revient : même manette
+	if len(bus.pads) != 1 {
+		t.Fatal("pas de nouvelle manette pour un joueur qui revient")
+	}
+	m.retirer("b")
+	if !pad.debranche {
+		t.Fatal("joueur retiré : manette débranchée")
+	}
+	m.definirPlaces(map[string]int{})
+	m.retirer("b")
+	if len(bus.pads) != 1 {
+		t.Fatal("rien à rebrancher")
+	}
+}
+
+func TestRetireApresAvoirQuitteSaPlace(t *testing.T) {
+	m, bus, _ := fabriqueManettes()
+	m.definirPlaces(map[string]int{"b": 3})
+	m.definirPlaces(map[string]int{}) // il a quitté sa place puis l'hôte le retire
+	m.retirer("b")
+	if !bus.parPlace[3].debranche {
+		t.Fatal("la manette de son ancienne place est débranchée")
 	}
 }
 
 func TestSpectateurSansEffet(t *testing.T) {
 	m, bus, _ := fabriqueManettes()
-	m.preparer()
 	m.definirPlaces(map[string]int{"b": 2})
 	if p, err := m.appliquer("spectateur", XusbReport{Buttons: 0x1000}, 1); p != 0 || !errors.Is(err, errSpectateur) {
 		t.Fatal(p, err)
@@ -78,19 +127,17 @@ func TestSpectateurSansEffet(t *testing.T) {
 
 func TestJ1BrancheeSeulementSiUnAmiLaPrend(t *testing.T) {
 	m, bus, _ := fabriqueManettes()
-	m.preparer()
 	m.definirPlaces(map[string]int{"b": 1})
 	if p, err := m.appliquer("b", XusbReport{Buttons: 0x1000}, 1); p != 1 || err != nil {
 		t.Fatal(p, err)
 	}
-	if len(bus.pads) != 4 || dernier(bus.pads[3]).Buttons != 0x1000 {
-		t.Fatal("la manette de J1 est branchée après les autres, à la demande")
+	if len(bus.pads) != 1 || dernier(bus.parPlace[1]).Buttons != 0x1000 {
+		t.Fatal("la manette de J1 est branchée quand un ami prend J1")
 	}
 }
 
 func TestChangementDeJoueurRelacheLaPlace(t *testing.T) {
 	m, bus, _ := fabriqueManettes()
-	m.preparer()
 	m.definirPlaces(map[string]int{"b": 2})
 	m.appliquer("b", XusbReport{Buttons: 0x1000}, 1)
 	m.definirPlaces(map[string]int{"c": 2}) // Bob part, Chloé prend J2
@@ -118,7 +165,6 @@ func TestPlacesInvalidesIgnorees(t *testing.T) {
 
 func TestSansViGEm(t *testing.T) {
 	m := nouvellesManettes(nil)
-	m.preparer()
 	m.definirPlaces(map[string]int{"a": 2})
 	if _, err := m.appliquer("a", XusbReport{}, 1); !errors.Is(err, errPasDeViGEm) {
 		t.Fatal(err)
@@ -130,7 +176,6 @@ func TestSansViGEm(t *testing.T) {
 
 func TestMessagesEnRetardIgnores(t *testing.T) {
 	m, bus, now := fabriqueManettes()
-	m.preparer()
 	m.definirPlaces(map[string]int{"a": 2})
 	n := len(bus.pads[0].recus)
 	m.appliquer("a", XusbReport{Buttons: 1}, 10)
@@ -147,7 +192,6 @@ func TestMessagesEnRetardIgnores(t *testing.T) {
 
 func TestLimiteDeDebit(t *testing.T) {
 	m, bus, now := fabriqueManettes()
-	m.preparer()
 	m.definirPlaces(map[string]int{"a": 2})
 	n := len(bus.pads[0].recus)
 	for i := uint32(1); i <= 200; i++ {
@@ -166,7 +210,6 @@ func TestLimiteDeDebit(t *testing.T) {
 
 func TestRelacheSiSilence(t *testing.T) {
 	m, bus, now := fabriqueManettes()
-	m.preparer()
 	m.definirPlaces(map[string]int{"a": 2})
 	m.appliquer("a", XusbReport{Buttons: 0x1000, ThumbLX: 30000}, 1)
 	n := len(bus.pads[0].recus)
@@ -185,8 +228,11 @@ func TestRelacheSiSilence(t *testing.T) {
 
 func TestFinDePartie(t *testing.T) {
 	m, bus, _ := fabriqueManettes()
-	m.preparer()
+	m.definirPlaces(map[string]int{"b": 2, "c": 3})
 	m.fermer()
+	if len(bus.pads) != 2 {
+		t.Fatal(len(bus.pads))
+	}
 	for _, p := range bus.pads {
 		if !p.debranche || dernier(p) != (XusbReport{}) {
 			t.Fatal("à la fin : manette relâchée puis débranchée")
@@ -203,7 +249,7 @@ func (p *padCapricieux) Submit(r XusbReport) error {
 
 type busCapricieux struct{}
 
-func (busCapricieux) brancher() (padVirtuel, error) { return &padCapricieux{}, nil }
+func (busCapricieux) brancher(int) (padVirtuel, error) { return &padCapricieux{}, nil }
 
 func TestErreurDEnvoiNeRetirePasLaManette(t *testing.T) {
 	m := nouvellesManettes(busCapricieux{})
