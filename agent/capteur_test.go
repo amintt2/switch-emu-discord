@@ -13,9 +13,13 @@ type tamponSur struct {
 	b  bytes.Buffer
 }
 
-func (t *tamponSur) Write(p []byte) (int, error) { t.mu.Lock(); defer t.mu.Unlock(); return t.b.Write(p) }
-func (t *tamponSur) Close() error                { return nil }
-func (t *tamponSur) String() string              { t.mu.Lock(); defer t.mu.Unlock(); return t.b.String() }
+func (t *tamponSur) Write(p []byte) (int, error) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.b.Write(p)
+}
+func (t *tamponSur) Close() error   { return nil }
+func (t *tamponSur) String() string { t.mu.Lock(); defer t.mu.Unlock(); return t.b.String() }
 
 // Deux amis arrivent coup sur coup : la deuxième demande d'image clé ne doit pas être perdue.
 func TestDemandesIDRRegroupeesPasPerdues(t *testing.T) {

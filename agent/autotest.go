@@ -13,7 +13,7 @@ func autoTestManette(bus busManettes) int {
 		fmt.Println("ÉCHEC : ViGEmBus n'est pas installé")
 		return 1
 	}
-	p, err := bus.brancher()
+	p, err := bus.brancher(2)
 	if err != nil {
 		fmt.Println("ÉCHEC : impossible de brancher une manette virtuelle :", err)
 		return 1

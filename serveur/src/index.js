@@ -52,6 +52,7 @@ function diffuser(salleId) {
   const vue = salles.vue(salleId);
   const hoteUid = vue.hote?.uid;
   vue.jeu = hoteUid ? agents.jeuEnCours(hoteUid)?.titre || null : null;
+  vue.manettes = hoteUid ? manettesBranchees.get(hoteUid) || [] : [];
   for (const j of joueurs.get(salleId) || []) {
     if (j.ws.readyState !== 1) continue;
     const moi = { agent: agents.enLigne(j.uid) ? 'en-ligne' : 'absent' };
@@ -68,8 +69,13 @@ function diffuser(salleId) {
 /** Dit à l'agent de l'hôte qui joue sur quelle place (les amis à distance seulement). */
 function envoyerPlaces(salleId) {
   const s = salles.get(salleId);
-  if (s?.hote) agents.envoyer(s.hote, { type: 'places', salle: salleId, places: salles.placesDistantes(salleId) });
+  if (!s?.hote) return;
+  const places = salles.placesDistantes(salleId);
+  const noms = Object.fromEntries(s.places.filter((pl) => pl && places[pl.uid]).map((pl) => [pl.uid, pl.nom]));
+  agents.envoyer(s.hote, { type: 'places', salle: salleId, places, noms });
 }
+/** uid de l'hôte -> places dont la manette virtuelle est branchée sur son PC (envoyé par son agent). */
+const manettesBranchees = new Map();
 
 /** Démarre ou arrête le flux sur le PC de l'hôte. */
 function commanderAgent(uid, salleId, heberger) {
@@ -319,6 +325,11 @@ app.register(async (scope) => {
       // Après une reconnexion, l'agent dit quelle salle il héberge encore.
       if (m?.type === 'heberge' && typeof m.salle === 'string' && m.salle.length <= 64) {
         if (!reprendre(a.uid, m.salle)) reprises.set(a.uid, { salle: m.salle, jusqua: Date.now() + DELAI_REPRISE_MS });
+        return;
+      }
+      if (m?.type === 'manettes' && Array.isArray(m.places)) {
+        manettesBranchees.set(a.uid, [...new Set(m.places.filter((n) => Number.isInteger(n) && n >= 1 && n <= 4))].sort());
+        for (const s of salles.salles.values()) if (s.hote === a.uid) diffuser(s.id);
         return;
       }
       if (m?.type === 'diag') {

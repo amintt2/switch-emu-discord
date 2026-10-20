@@ -2,10 +2,12 @@ package main
 
 // Manettes virtuelles (ViGEm) des joueurs à distance, une par place J1 à J4.
 // Le serveur dit qui joue sur quelle place ; un spectateur n'a aucun effet sur le jeu.
-// Les manettes de J2, J3 et J4 sont branchées dès le début de la partie, dans cet ordre, et restent
-// branchées : l'émulateur les distingue par ordre de branchement, Player 2/3/4 restent donc stables.
-// J1 est normalement l'hôte sur son PC (sa vraie manette) ; sa manette virtuelle n'est créée que si
-// l'hôte laisse J1 à un ami.
+// La manette d'une place est branchée quand quelqu'un la prend, et reste branchée s'il se déconnecte
+// ou laisse sa place (il peut revenir, un autre peut la reprendre) ; elle n'est débranchée que si
+// l'hôte retire la personne, ou à la fin de la partie.
+// Chaque place a son propre identifiant de manette (PID 0x5301 à 0x5304) : Ryubing reconnaît
+// toujours « la manette de J2 » quel que soit l'ordre de branchement (voir ryubing.go).
+// J1 est normalement l'hôte sur son PC (sa vraie manette) : pas de manette virtuelle pour lui.
 
 import (
 	"encoding/json"
@@ -37,13 +39,16 @@ type padVirtuel interface {
 }
 
 type busManettes interface {
-	brancher() (padVirtuel, error)
+	brancher(place int) (padVirtuel, error)
 }
+
+// pidPlace est l'identifiant de produit USB de la manette virtuelle d'une place (vendeur Microsoft).
+func pidPlace(p int) uint16 { return 0x5300 + uint16(p) }
 
 // busViGEm adapte le client ViGEm à l'interface (permet de tester sans pilote).
 type busViGEm struct{ v *ViGEm }
 
-func (b busViGEm) brancher() (padVirtuel, error) { return b.v.PlugX360() }
+func (b busViGEm) brancher(place int) (padVirtuel, error) { return b.v.PlugX360(pidPlace(place)) }
 
 // messageManette est l'état complet de la manette d'un joueur (envoyé à chaque changement et toutes les 100 ms).
 type messageManette struct {
@@ -109,33 +114,53 @@ func nouvellesManettes(bus busManettes) *manettes {
 	return &manettes{bus: bus, places: map[string]int{}, refus: map[string]bool{}, now: time.Now}
 }
 
-// preparer branche les manettes de J2, J3 et J4, dans l'ordre.
-func (m *manettes) preparer() {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	if m.bus == nil {
-		return
-	}
-	for p := 2; p <= nbPlaces; p++ {
-		if err := m.brancherPlace(p); err != nil {
-			log.Printf("manette J%d : %v", p, err)
-		}
-	}
-}
-
 func (m *manettes) brancherPlace(p int) error {
 	if m.pads[p] != nil {
 		return nil
 	}
-	pad, err := m.bus.brancher()
+	pad, err := m.bus.brancher(p)
 	if err != nil {
 		return err
 	}
 	m.pads[p] = pad
+	log.Printf("manette virtuelle de J%d branchée", p)
 	return nil
 }
 
-// definirPlaces applique la répartition envoyée par le serveur. Une place qui change de joueur est relâchée.
+// branchees renvoie les places dont la manette virtuelle est branchée.
+func (m *manettes) branchees() []int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var r []int
+	for p := 1; p <= nbPlaces; p++ {
+		if m.pads[p] != nil {
+			r = append(r, p)
+		}
+	}
+	return r
+}
+
+// retirer : l'hôte a retiré cette personne de la partie, sa manette est débranchée.
+func (m *manettes) retirer(uid string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for p := 1; p <= nbPlaces; p++ {
+		if m.etats[p].uid != uid && m.places[uid] != p {
+			continue
+		}
+		if m.pads[p] != nil {
+			m.pads[p].Submit(XusbReport{})
+			m.pads[p].Unplug()
+			m.pads[p] = nil
+			log.Printf("manette virtuelle de J%d débranchée (joueur retiré)", p)
+		}
+		m.etats[p] = etatPlace{}
+	}
+	delete(m.places, uid)
+}
+
+// definirPlaces applique la répartition envoyée par le serveur. Une place qui change de joueur est relâchée ;
+// la manette d'une place prise est branchée tout de suite (l'hôte la voit avant que l'ami appuie).
 func (m *manettes) definirPlaces(nouvelles map[string]int) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -152,7 +177,15 @@ func (m *manettes) definirPlaces(nouvelles map[string]int) {
 			if m.pads[p] != nil {
 				m.pads[p].Submit(XusbReport{})
 			}
-			m.etats[p] = etatPlace{uid: occupant[p], jetons: rafaleManette, majJetons: m.now(), relache: true}
+			// Une place libérée garde le nom de son dernier joueur : s'il est retiré, sa manette est débranchée.
+			if occupant[p] != "" {
+				m.etats[p] = etatPlace{uid: occupant[p], jetons: rafaleManette, majJetons: m.now(), relache: true}
+			}
+		}
+		if occupant[p] != "" && m.bus != nil {
+			if err := m.brancherPlace(p); err != nil {
+				log.Printf("manette J%d : %v", p, err)
+			}
 		}
 	}
 	m.places = propres

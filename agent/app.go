@@ -144,12 +144,23 @@ func (a *Agent) lancerJeu(id string) error {
 			j = &a.jeux[i]
 		}
 	}
-	ryujinx := a.cfg.Ryujinx
+	ryujinx, manuel := a.cfg.Ryujinx, a.cfg.RyubingManuel
 	a.mu.Unlock()
 	if j == nil {
 		return errors.New("jeu inconnu")
 	}
 	a.fermerJeu()
+	// Ryubing doit être fermé pour qu'on relie ses manettes (sinon il réécrirait son fichier).
+	for i := 0; i < 30 && ryubingOuvert(); i++ {
+		time.Sleep(100 * time.Millisecond)
+	}
+	if !manuel {
+		if err := configurerRyubing(ryujinx); err != nil {
+			log.Printf("manettes de Ryubing : %v", err)
+		} else {
+			log.Printf("manettes de Ryubing : Player2 à Player4 reliés aux manettes de J2 à J4")
+		}
+	}
 	cmd, err := commandeJeu(ryujinx, *j)
 	if err != nil {
 		return err
@@ -310,6 +321,9 @@ func (a *Agent) deps() depsHebergement {
 			v["type"], v["quoi"] = "diag", quoi
 			envoyer(v)
 		},
+		manettes: func(salle string, places []int) {
+			envoyer(map[string]any{"type": "manettes", "salle": salle, "places": places})
+		},
 	}
 }
 
@@ -409,6 +423,9 @@ func (a *Agent) session(ctx, partieCtx context.Context, cfg Config) error {
 			if salle != "" {
 				// Reconnexion pendant une partie : le serveur reprend là où on en était.
 				envoyer(map[string]any{"type": "heberge", "salle": salle})
+				if p := a.partie(); p != nil {
+					envoyer(map[string]any{"type": "manettes", "salle": salle, "places": p.placesBranchees()})
+				}
 			}
 			log.Printf("connecté au serveur (compte : %s)", o.Nom)
 		case "heberger":
@@ -451,22 +468,28 @@ func (a *Agent) etatUI() map[string]any {
 	if a.majDispo != nil {
 		maj["version"] = a.majDispo.m.Version
 	}
+	var manettes []infoManette
+	if a.courant != nil {
+		manettes = a.courant.etatManettes()
+	}
 	return map[string]any{
-		"version":      version,
-		"compte":       a.cfg.Nom,
-		"lie":          a.cfg.Jeton != "",
-		"connecte":     a.connecte,
-		"erreur":       a.derniere,
-		"jumelage":     a.jumelage,
-		"heberge":      a.salle != "",
-		"jeuEnCours":   titreActuel,
-		"ryujinx":      a.cfg.Ryujinx,
-		"dossiersJeux": a.cfg.DossiersJeux,
-		"jeux":         a.jeux,
-		"vigem":        a.bus != nil,
-		"demarrage":    demarrageWindows(),
-		"installe":     estInstalle(),
-		"maj":          maj,
-		"serveur":      a.cfg.Serveur,
+		"manettes":      manettes,
+		"ryubingManuel": a.cfg.RyubingManuel,
+		"version":       version,
+		"compte":        a.cfg.Nom,
+		"lie":           a.cfg.Jeton != "",
+		"connecte":      a.connecte,
+		"erreur":        a.derniere,
+		"jumelage":      a.jumelage,
+		"heberge":       a.salle != "",
+		"jeuEnCours":    titreActuel,
+		"ryujinx":       a.cfg.Ryujinx,
+		"dossiersJeux":  a.cfg.DossiersJeux,
+		"jeux":          a.jeux,
+		"vigem":         a.bus != nil,
+		"demarrage":     demarrageWindows(),
+		"installe":      estInstalle(),
+		"maj":           maj,
+		"serveur":       a.cfg.Serveur,
 	}
 }

@@ -22,6 +22,56 @@ type hebergement struct {
 	cancel context.CancelFunc
 	fini   chan struct{}
 	ordres chan ordreServeur // places, exclure : traités dans la boucle de la partie
+
+	mu    sync.Mutex
+	man   *manettes
+	noms  map[string]string // uid -> pseudo Discord
+	place map[int]string    // place -> dernier joueur (même déconnecté)
+}
+
+// infoManette : une ligne de la fenêtre de l'agent (« J2 : Bob, manette branchée »).
+type infoManette struct {
+	Place    int    `json:"place"`
+	Nom      string `json:"nom"`
+	Branchee bool   `json:"branchee"`
+}
+
+func (h *hebergement) etatManettes() []infoManette {
+	h.mu.Lock()
+	m := h.man
+	noms, place := map[string]string{}, map[int]string{}
+	for k, v := range h.noms {
+		noms[k] = v
+	}
+	for k, v := range h.place {
+		place[k] = v
+	}
+	h.mu.Unlock()
+	if m == nil {
+		return nil
+	}
+	branchees := map[int]bool{}
+	for _, p := range m.branchees() {
+		branchees[p] = true
+	}
+	var r []infoManette
+	for p := 1; p <= nbPlaces; p++ {
+		if uid := place[p]; uid != "" || branchees[p] {
+			r = append(r, infoManette{Place: p, Nom: noms[uid], Branchee: branchees[p]})
+		}
+	}
+	return r
+}
+
+// placesBranchees : pour le serveur (l'Activité montre quelles manettes sont prêtes).
+func (h *hebergement) placesBranchees() []int {
+	h.mu.Lock()
+	m := h.man
+	h.mu.Unlock()
+	if m == nil {
+		return []int{}
+	}
+	return append([]int{}, m.branchees()...)
 }
 
 // transmettre passe un ordre du serveur (places, exclure) à la partie en cours.
@@ -54,12 +104,13 @@ type depsHebergement struct {
 	jetonFrais  func(ctx context.Context, salle string) (string, error) // redemande un jeton au serveur
 	signalerErr func(salle, texte string)
 	diag        func(quoi string, v map[string]any) // mesures envoyées au journal du serveur
-	bus         busManettes // nil si ViGEmBus n'est pas installé
+	manettes    func(salle string, places []int)    // manettes virtuelles branchées (montrées dans l'Activité)
+	bus         busManettes                         // nil si ViGEmBus n'est pas installé
 }
 
 func demarrerHebergement(parent context.Context, o ordreServeur, cfg Config, d depsHebergement) *hebergement {
 	ctx, cancel := context.WithCancel(parent)
-	h := &hebergement{salle: o.Salle, cancel: cancel, fini: make(chan struct{}), ordres: make(chan ordreServeur, 16)}
+	h := &hebergement{salle: o.Salle, cancel: cancel, fini: make(chan struct{}), ordres: make(chan ordreServeur, 16), noms: map[string]string{}, place: map[int]string{}}
 	go func() {
 		defer close(h.fini)
 		h.tourner(ctx, o, cfg, d)
@@ -83,8 +134,11 @@ func (h *hebergement) tourner(ctx context.Context, o ordreServeur, cfg Config, d
 	defer k.arreter()
 
 	m := nouvellesManettes(d.bus)
-	m.preparer() // J2, J3, J4 branchées dans l'ordre dès le début
 	defer m.fermer()
+	h.mu.Lock()
+	h.man = m
+	h.mu.Unlock()
+	signalerManettes := func() { d.manettes(o.Salle, h.placesBranchees()) }
 	go func() {
 		t := time.NewTicker(250 * time.Millisecond)
 		defer t.Stop()
@@ -160,8 +214,28 @@ func (h *hebergement) tourner(ctx context.Context, o ordreServeur, cfg Config, d
 			switch o.Type {
 			case "places":
 				m.definirPlaces(o.Places)
+				h.mu.Lock()
+				for uid, nom := range o.Noms {
+					h.noms[uid] = nom
+				}
+				for uid, p := range o.Places {
+					if p >= 1 && p <= nbPlaces {
+						h.place[p] = uid
+					}
+				}
+				h.mu.Unlock()
+				signalerManettes()
 				log.Printf("places : %d joueur(s) à distance", len(o.Places))
 			case "exclure":
+				m.retirer(o.UID)
+				h.mu.Lock()
+				for p, uid := range h.place {
+					if uid == o.UID {
+						delete(h.place, p)
+					}
+				}
+				h.mu.Unlock()
+				signalerManettes()
 				// Le relais coupe la connexion de la personne retirée.
 				b, _ := json.Marshal(map[string]string{"type": "exclure", "uid": o.UID})
 				for _, l := range liens {

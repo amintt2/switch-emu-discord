@@ -62,7 +62,8 @@ type ordreServeur struct {
 	Jeton  string   `json:"jeton"`
 	Nom    string   `json:"nom"`
 	// "places" : uid -> place (1 à 4) des joueurs à distance ; "exclure" : uid de la personne retirée.
-	Places map[string]int `json:"places"`
-	UID    string         `json:"uid"`
-	Jeu    string         `json:"jeu"` // "lancer" : identifiant d'un jeu de la liste de l'agent
+	Places map[string]int    `json:"places"`
+	Noms   map[string]string `json:"noms"` // "places" : uid -> pseudo Discord (pour la fenêtre de l'agent)
+	UID    string            `json:"uid"`
+	Jeu    string            `json:"jeu"` // "lancer" : identifiant d'un jeu de la liste de l'agent
 }

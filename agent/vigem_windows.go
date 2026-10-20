@@ -91,10 +91,11 @@ func (v *ViGEm) ioctl(code uint32, in unsafe.Pointer, inLen uint32, out unsafe.P
 
 func (v *ViGEm) Close() { windows.CloseHandle(v.h) }
 
-// PlugX360 plugs a wired Xbox 360 pad (VID 045E / PID 028E) and waits until it accepts reports.
-func (v *ViGEm) PlugX360() (*Pad, error) {
+// PlugX360 plugs a wired Xbox 360 pad (VID 045E, given PID) and waits until it accepts reports.
+// Windows still drives it as an Xbox 360 pad (XInput) whatever the PID.
+func (v *ViGEm) PlugX360(pid uint16) (*Pad, error) {
 	for serial := uint32(1); serial <= 16; serial++ {
-		pt := pluginTarget{Size: uint32(unsafe.Sizeof(pluginTarget{})), SerialNo: serial, TargetType: 0, VendorID: 0x045E, ProductID: 0x028E}
+		pt := pluginTarget{Size: uint32(unsafe.Sizeof(pluginTarget{})), SerialNo: serial, TargetType: 0, VendorID: 0x045E, ProductID: pid}
 		if err := v.ioctl(ioctlPlugin, unsafe.Pointer(&pt), pt.Size, nil, 0); err != nil {
 			continue // serial already used by another client
 		}

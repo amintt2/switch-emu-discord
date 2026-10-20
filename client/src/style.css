@@ -123,3 +123,5 @@ dialog.reglages tr.attente td { color: #f5c451; }
   .debug dl { margin-bottom: 4px; }
   .boutons-scene { opacity: .8; }
 }
+.badge.pret { background: color-mix(in srgb, var(--ok) 20%, transparent); color: #a8f0d0; margin-left: 0; }
+#places .badge.pret + button { margin-left: 4px; }
