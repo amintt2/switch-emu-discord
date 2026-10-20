@@ -1,0 +1,9 @@
+:root { color-scheme: dark; }
+body { margin: 0; background: #111216; color: #e6e8ef; font: 16px/1.6 system-ui, -apple-system, "Segoe UI", sans-serif; }
+main { max-width: 720px; margin: 0 auto; padding: 32px 16px 64px; }
+h1 { font-size: 28px; margin: 0 0 4px; }
+h2 { font-size: 18px; margin: 28px 0 8px; }
+.maj { color: #9aa0b2; margin: 0 0 24px; }
+a { color: #6cc4ff; }
+ul { padding-left: 20px; }
+li { margin: 4px 0; }

@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Switch EMU</title>
+</head>
+<body>
+  <div id="app">
+    <header>
+      <h1>Switch EMU</h1>
+      <span id="stats" class="stats" hidden></span>
+    </header>
+    <main>
+      <section id="scene">
+        <canvas id="ecran" width="1280" height="720"></canvas>
+        <div id="voile"><div class="message" id="message">Connexion…</div></div>
+      </section>
+      <aside id="panneau">
+        <h2>Dans la salle</h2>
+        <ul id="participants"></ul>
+        <div id="actions"></div>
+      </aside>
+    </main>
+    <div id="toast" role="status" hidden></div>
+  </div>
+  <script type="module" src="/src/main.ts"></script>
+</body>
+</html>

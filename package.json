@@ -1,0 +1,22 @@
+{
+  "name": "switch-emu",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Activité Discord pour jouer à plusieurs à des jeux émulés sur le PC de l'hôte.",
+  "type": "module",
+  "workspaces": [
+    "serveur",
+    "client"
+  ],
+  "scripts": {
+    "dev": "npm run dev --workspace serveur & npm run dev --workspace client",
+    "build": "npm run build --workspace client",
+    "start": "npm run start --workspace serveur",
+    "test": "npm test --workspace serveur && npm test --workspace client && npm test --prefix relais",
+    "check": "npm run check --workspace client"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "license": "GPL-3.0-only"
+}
