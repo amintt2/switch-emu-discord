@@ -61,3 +61,24 @@ test('une seule connexion de contrôle par compte', () => {
   assert.equal(agents.deconnecter('a', ws2), true);
   assert.equal(agents.enLigne('a'), false);
 });
+
+test('bibliothèque de jeux : validée, bornée, jeu en cours seulement s’il est dans la liste', () => {
+  const { agents } = fabrique();
+  agents.definirJeux('a', [
+    { id: '0123456789abcdef', titre: '  Mario Kart 8 Deluxe  ', chemin: 'C:\\secret\\mk8.nsp' },
+    { id: '../../etc', titre: 'piège' },
+    { id: 'fedcba9876543210', titre: 'x'.repeat(500) },
+    'nimporte quoi',
+  ]);
+  const jeux = agents.jeuxDe('a');
+  assert.deepEqual(jeux.map((j) => j.id), ['0123456789abcdef', 'fedcba9876543210']);
+  assert.equal(jeux[0].titre, 'Mario Kart 8 Deluxe');
+  assert.equal(jeux[1].titre.length, 120);
+  assert.equal('chemin' in jeux[0], false);  // le chemin des fichiers ne quitte pas le PC
+  agents.definirJeuEnCours('a', 'ffffffffffffffff');
+  assert.equal(agents.jeuEnCours('a'), null);
+  agents.definirJeuEnCours('a', '0123456789abcdef');
+  assert.equal(agents.jeuEnCours('a').titre, 'Mario Kart 8 Deluxe');
+  assert.equal(agents.aLeJeu('a', 'fedcba9876543210'), true);
+  assert.equal(agents.aLeJeu('b', 'fedcba9876543210'), false);
+});

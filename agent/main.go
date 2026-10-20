@@ -1,37 +1,92 @@
-// Agent Switch EMU : tourne sur le PC de l'hôte. Il se connecte EN SORTANT au serveur (aucun port à
-// ouvrir), et quand l'hôte clique « Héberger » dans l'Activité, il capture l'écran et l'envoie au relais.
+// Switch EMU — l'agent du PC de l'hôte. Il se connecte EN SORTANT au serveur (aucun port à ouvrir) ;
+// quand l'hôte clique « Héberger » dans l'Activité, il capture l'écran, l'envoie au relais, et crée une
+// manette virtuelle pour chaque ami. Il vit près de l'horloge, avec une petite fenêtre de réglages.
 //
-//	agent.exe [-serveur https://switch.mciut.fr] [-capteur chemin\capteur.exe] [-dejumeler]
+//	SwitchEMU.exe                 application normale (s'installe au premier lancement)
+//	SwitchEMU.exe -demarrage      lancé avec Windows : seulement l'icône, sans ouvrir la fenêtre
+//	SwitchEMU.exe -console        sans fenêtre ni installation (développement)
+//	SwitchEMU.exe -test-manette   vérifie les manettes virtuelles puis quitte
 package main
 
 import (
 	"context"
-	"encoding/json"
-	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"log"
-	"net/http"
 	"os"
 	"os/signal"
 	"path/filepath"
-	"sync"
-	"time"
 
-	"github.com/coder/websocket"
+	"fyne.io/systray"
+	"golang.org/x/sys/windows"
 )
 
 var version = "dev"
+
+func cheminJournal() string { return filepath.Join(dossierDonnees(), "agent.log") }
 
 func main() {
 	chemin := flag.String("config", cheminConfig(), "fichier de configuration")
 	serveur := flag.String("serveur", "", "adresse du serveur (remplace celle de la configuration)")
 	exeCapteur := flag.String("capteur", "", "chemin de capteur.exe (par défaut : à côté de l'agent)")
-	dejumeler := flag.Bool("dejumeler", false, "oublie le compte lié et redemande un code")
 	dev := flag.Bool("dev", false, "essais en local : accepte un relais en ws://localhost")
+	console := flag.Bool("console", false, "sans fenêtre ni installation (développement)")
+	demarrage := flag.Bool("demarrage", false, "lancé avec Windows : seulement l'icône près de l'horloge")
 	testManette := flag.Bool("test-manette", false, "branche une manette virtuelle, appuie sur A, vérifie que Windows la voit, puis quitte")
+	installer := flag.String("installer", "", "usage interne : installe cette version dans ce dossier")
+	attendre := flag.Int("attendre", 0, "usage interne : attend la fin de ce processus avant d'installer")
 	flag.Parse()
-	log.SetFlags(log.Ltime)
+
+	// Journal : dans un fichier (l'application n'a pas de console), et à l'écran en mode console.
+	os.MkdirAll(dossierDonnees(), 0o755)
+	if info, err := os.Stat(cheminJournal()); err == nil && info.Size() > 5<<20 {
+		os.Rename(cheminJournal(), cheminJournal()+".ancien")
+	}
+	if f, err := os.OpenFile(cheminJournal(), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644); err == nil {
+		log.SetOutput(io.MultiWriter(f, os.Stderr)) // le fichier d'abord : en mode fenêtre, il n'y a pas de console
+	}
+	log.SetFlags(log.Ldate | log.Ltime)
+	log.Printf("Switch EMU %s", version)
+
+	if *installer != "" {
+		if err := modeInstallateur(*installer, *attendre); err != nil {
+			log.Fatal(err)
+		}
+		return
+	}
+
+	// Manettes virtuelles des amis (pilote ViGEmBus).
+	var bus busManettes
+	if v, err := OpenViGEm(); err != nil {
+		log.Printf("manettes virtuelles indisponibles : %v", err)
+	} else {
+		bus = busViGEm{v}
+		defer v.Close()
+	}
+	if *testManette {
+		os.Exit(autoTestManette(bus))
+	}
+
+	// Premier lancement depuis un zip : on s'installe dans %LOCALAPPDATA%\SwitchEMU\app et on se relance.
+	if !*console && !*dev && version != "dev" && !estInstalle() {
+		if err := modeInstallateur(dossierApp(), 0); err != nil {
+			log.Fatal(err)
+		}
+		reglerDemarrageWindows(true)
+		return
+	}
+
+	// Une seule instance : la deuxième se contente d'ouvrir la fenêtre de la première.
+	if !*console {
+		nom, _ := windows.UTF16PtrFromString(`Local\SwitchEMU-agent`)
+		if _, err := windows.CreateMutex(nil, false, nom); err == windows.ERROR_ALREADY_EXISTS {
+			if b, err := os.ReadFile(filepath.Join(dossierDonnees(), "fenetre.url")); err == nil {
+				ouvrirNavigateur(string(b))
+			}
+			return
+		}
+	}
 
 	cfg, err := chargerConfig(*chemin)
 	if err != nil {
@@ -41,161 +96,33 @@ func main() {
 		cfg.Serveur = *serveur
 	}
 	cfg.dev = *dev
-	if *dejumeler {
-		cfg.Jeton, cfg.Nom = "", ""
-	}
 	if *exeCapteur == "" {
-		self, _ := os.Executable()
-		*exeCapteur = filepath.Join(filepath.Dir(self), "capteur.exe")
+		*exeCapteur = filepath.Join(dossierExe(), "capteur.exe")
 	}
+
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
+	a := nouvelAgent(*chemin, cfg, *exeCapteur, bus)
+	go a.boucle(ctx)
+	go a.surveillerMaj(ctx)
 
-	fmt.Printf("Switch EMU — agent %s\n", version)
-	// Manettes virtuelles des amis (pilote ViGEmBus).
-	var bus busManettes
-	if v, err := OpenViGEm(); err != nil {
-		log.Printf("manettes virtuelles indisponibles : %v — installe ViGEmBus pour que tes amis puissent jouer", err)
-	} else {
-		bus = busViGEm{v}
-		defer v.Close()
-	}
-	if *testManette {
-		os.Exit(autoTestManette(bus))
-	}
-	if cfg.Jeton == "" {
-		var jeton, nom string
-		for {
-			jeton, nom, err = jumeler(ctx, cfg.Serveur, func(code string) {
-				fmt.Printf("\n  Code de jumelage :  %s\n\n", code)
-				fmt.Println("  Dans Discord, ouvre l'Activité Switch EMU, clique « Lier mon PC » et tape ce code.")
-				fmt.Println("  (il est valable 10 minutes ; un nouveau code s'affichera ensuite)")
+	if *console {
+		a.quitter = stop
+		if cfg.Jeton == "" {
+			a.jumelerParNavigateur(func(url string) {
+				fmt.Printf("\nOuvre cette page pour lier ce PC à ton compte Discord :\n  %s\n\n", url)
 			})
-			if err == nil || ctx.Err() != nil {
-				break
-			}
-			log.Printf("%v — nouveau code dans 5 s", err)
-			time.Sleep(5 * time.Second)
 		}
-		if err != nil {
-			log.Fatal(err)
-		}
-		cfg.Jeton, cfg.Nom = jeton, nom
-		if err := cfg.enregistrer(*chemin); err != nil {
-			log.Fatalf("impossible d'enregistrer la configuration : %v", err)
-		}
-		fmt.Printf("PC lié au compte Discord de %s.\n", nom)
+		<-ctx.Done()
+		return
 	}
-	controler(ctx, cfg, *exeCapteur, bus)
-}
 
-// controler garde la connexion de contrôle ouverte et exécute les ordres connus du serveur.
-func controler(ctx context.Context, cfg Config, exeCapteur string, bus busManettes) {
-	attente := time.Second
-	for ctx.Err() == nil {
-		err := sessionControle(ctx, cfg, exeCapteur, bus)
-		if errors.Is(err, errNonJumele) {
-			log.Printf("le serveur ne reconnaît plus ce PC : relance l'agent avec -dejumeler pour obtenir un nouveau code")
-			return
-		}
-		if ctx.Err() != nil {
-			return
-		}
-		log.Printf("serveur injoignable (%v), nouvel essai dans %s", err, attente)
-		select {
-		case <-ctx.Done():
-			return
-		case <-time.After(attente):
-		}
-		if attente < 30*time.Second {
-			attente *= 2
-		}
-	}
-}
-
-var errNonJumele = errors.New("agent non jumelé")
-
-func sessionControle(ctx context.Context, cfg Config, exeCapteur string, bus busManettes) error {
-	h := http.Header{}
-	h.Set("Authorization", "Bearer "+cfg.Jeton)
-	c, _, err := websocket.Dial(ctx, urlWS(cfg.Serveur, "/api/agent"), &websocket.DialOptions{HTTPHeader: h})
+	ui, err := demarrerInterface(a)
 	if err != nil {
-		return err
+		log.Fatal(err)
 	}
-	defer c.CloseNow()
-	c.SetReadLimit(64 << 10)
-
-	var mu sync.Mutex
-	envoyer := func(v any) {
-		b, _ := json.Marshal(v)
-		mu.Lock()
-		defer mu.Unlock()
-		wctx, cancel := context.WithTimeout(ctx, 5*time.Second)
-		defer cancel()
-		c.Write(wctx, websocket.MessageText, b)
-	}
-	// Réponses aux demandes de jeton (reconnexion à un relais).
-	jetons := make(chan ordreServeur, 4)
-	deps := depsHebergement{
-		exeCapteur: exeCapteur,
-		capture:    cfg.Capture,
-		bus:        bus,
-		jetonFrais: func(jctx context.Context, salle string) (string, error) {
-			envoyer(map[string]string{"type": "jeton", "salle": salle})
-			select {
-			case o := <-jetons:
-				return o.Jeton, nil
-			case <-time.After(10 * time.Second):
-				return "", errors.New("pas de jeton du serveur")
-			case <-jctx.Done():
-				return "", jctx.Err()
-			}
-		},
-		signalerErr: func(salle, texte string) { envoyer(map[string]string{"type": "etat", "salle": salle, "erreur": texte}) },
-	}
-	var courant *hebergement
-	defer func() {
-		if courant != nil {
-			courant.arreter()
-		}
-	}()
-
-	for {
-		_, b, err := c.Read(ctx)
-		if err != nil {
-			if websocket.CloseStatus(err) == 4001 {
-				return errNonJumele
-			}
-			return err
-		}
-		var o ordreServeur
-		if json.Unmarshal(b, &o) != nil {
-			continue
-		}
-		switch o.Type {
-		case "bienvenue":
-			log.Printf("connecté au serveur (compte : %s). En attente : clique « Héberger » dans l'Activité.", o.Nom)
-		case "heberger":
-			if courant != nil {
-				courant.arreter()
-			}
-			courant = demarrerHebergement(ctx, o, cfg, deps)
-		case "arreter":
-			if courant != nil && courant.salle == o.Salle {
-				courant.arreter()
-				courant = nil
-			}
-		case "jeton":
-			select {
-			case jetons <- o:
-			default:
-			}
-		case "places", "exclure":
-			if courant != nil && courant.salle == o.Salle {
-				courant.transmettre(o)
-			}
-		default:
-			log.Printf("ordre inconnu ignoré : %q", o.Type)
-		}
-	}
+	os.WriteFile(filepath.Join(dossierDonnees(), "fenetre.url"), []byte(ui.url()), 0o600)
+	a.quitter = func() { stop(); systray.Quit() }
+	go func() { <-ctx.Done(); systray.Quit() }()
+	ui.lancerIcone(*demarrage) // bloque jusqu'à « Quitter »
 }

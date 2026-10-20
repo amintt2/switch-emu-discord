@@ -87,3 +87,7 @@ dialog.reglages tr.attente td { color: #f5c451; }
 .badge.joue { background: color-mix(in srgb, var(--accent-2) 25%, transparent); color: #b5e6ff; }
 .jouer-avec { display: flex; align-items: center; gap: 6px; font-size: 13px; color: var(--discret); }
 .jouer-avec select { flex: 1; font: inherit; padding: 5px 8px; border-radius: 8px; background: var(--fond); color: var(--texte); border: 1px solid var(--bord); }
+
+.jeu { border: 1px solid var(--bord); border-radius: 10px; padding: 10px; display: flex; flex-direction: column; gap: 6px; }
+.jeu select { font: inherit; padding: 7px 8px; border-radius: 8px; background: var(--fond); color: var(--texte); border: 1px solid var(--bord); }
+#jeu-en-cours { color: var(--discret); font-weight: 500; font-size: 14px; margin-left: 6px; }

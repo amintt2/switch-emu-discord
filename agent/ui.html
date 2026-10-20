@@ -1,0 +1,127 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<title>Switch EMU</title>
+<style>
+  :root { color-scheme: dark; --fond: #12131a; --carte: #1c1e27; --bord: #2c2f3b; --texte: #eceef4; --discret: #9aa0b2; --accent: #8a6bff; --vert: #00c9a7; --rouge: #ff6b7a; }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--fond); color: var(--texte); font: 14px/1.45 "Segoe UI", system-ui, sans-serif; }
+  header { display: flex; align-items: center; gap: 10px; padding: 14px 16px; background: linear-gradient(135deg, #2a1b6e, #0b2a4a); }
+  header img { width: 36px; height: 36px; border-radius: 9px; }
+  header h1 { font-size: 17px; margin: 0; }
+  header small { color: #c9cdf2; display: block; font-size: 12px; }
+  main { padding: 12px 14px 20px; display: flex; flex-direction: column; gap: 10px; }
+  section { background: var(--carte); border: 1px solid var(--bord); border-radius: 12px; padding: 12px; }
+  h2 { font-size: 12px; text-transform: uppercase; letter-spacing: .6px; color: var(--discret); margin: 0 0 8px; }
+  p { margin: 4px 0; }
+  .discret { color: var(--discret); font-size: 13px; }
+  .pastille { display: inline-block; width: 9px; height: 9px; border-radius: 50%; margin-right: 6px; background: var(--discret); vertical-align: 1px; }
+  .ok .pastille { background: var(--vert); }
+  .ko .pastille { background: var(--rouge); }
+  .ligne { display: flex; align-items: center; gap: 8px; justify-content: space-between; }
+  .chemin { font: 12px ui-monospace, Consolas, monospace; color: var(--discret); word-break: break-all; }
+  button { font: inherit; font-weight: 600; border: 0; border-radius: 9px; padding: 8px 12px; background: var(--accent); color: #fff; cursor: pointer; }
+  button.sec { background: var(--bord); color: var(--texte); }
+  button.petit { padding: 4px 9px; font-size: 12px; }
+  .actions { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 8px; }
+  ul { list-style: none; padding: 0; margin: 6px 0 0; max-height: 220px; overflow: auto; }
+  li { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 5px 0; border-bottom: 1px solid var(--bord); }
+  li:last-child { border-bottom: 0; }
+  .code { font: 700 20px ui-monospace, Consolas, monospace; letter-spacing: 2px; }
+  label { display: flex; align-items: center; gap: 8px; cursor: pointer; }
+  #erreur { color: var(--rouge); font-size: 13px; }
+</style>
+</head>
+<body>
+<header><img src="/icone.png" alt=""><div><h1>Switch EMU</h1><small id="version"></small></div></header>
+<main>
+  <section id="compte"></section>
+  <section id="partie"></section>
+  <section>
+    <h2>Émulateur</h2>
+    <div id="emu"></div>
+    <div class="actions"><button class="sec" data-a="choisir-ryujinx">Choisir Ryujinx.exe…</button><button class="sec" data-a="detecter-ryujinx">Détecter</button></div>
+  </section>
+  <section>
+    <h2>Mes jeux</h2>
+    <div id="dossiers"></div>
+    <div class="actions"><button class="sec" data-a="ajouter-dossier">Ajouter un dossier…</button><button class="sec" data-a="rescanner">Actualiser</button></div>
+    <ul id="jeux"></ul>
+  </section>
+  <section>
+    <h2>Ce PC</h2>
+    <div id="pc"></div>
+    <label><input type="checkbox" id="demarrage"> Démarrer avec Windows (dans la zone près de l’horloge)</label>
+    <div class="actions"><button class="sec petit" data-a="maj-verifier">Chercher une mise à jour</button><button class="sec petit" data-a="journal">Journal</button><button class="sec petit" data-a="quitter">Quitter</button></div>
+  </section>
+  <p id="erreur"></p>
+</main>
+<script>
+const jeton = new URLSearchParams(location.search).get('t');
+const $ = (id) => document.getElementById(id);
+const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+
+async function action(a, valeur = '') {
+  $('erreur').textContent = '';
+  const r = await fetch('/api/action', { method: 'POST', headers: { 'X-Jeton': jeton, 'Content-Type': 'application/json' }, body: JSON.stringify({ action: a, valeur }) });
+  const b = await r.json().catch(() => ({}));
+  if (b.erreur) $('erreur').textContent = b.erreur;
+  rafraichir();
+}
+document.addEventListener('click', (e) => {
+  const b = e.target.closest('[data-a]');
+  if (b) action(b.dataset.a, b.dataset.v || '');
+});
+$('demarrage').onchange = (e) => action('demarrage', e.target.checked ? 'oui' : 'non');
+
+function rendre(e) {
+  $('version').textContent = `Agent ${e.version}` + (e.installe ? '' : ' · pas installé');
+  // Compte Discord
+  if (!e.lie) {
+    $('compte').className = 'ko';
+    $('compte').innerHTML = `<h2>Compte Discord</h2>
+      <p><span class="pastille"></span>Ce PC n’est pas encore lié à ton compte Discord.</p>
+      ${e.jumelage ? `<p class="discret">Connecte-toi dans la page qui vient de s’ouvrir. Code : <span class="code">${esc(e.jumelage)}</span></p>` : ''}
+      <div class="actions"><button data-a="lier">Se connecter avec Discord</button></div>`;
+  } else {
+    $('compte').className = e.connecte ? 'ok' : 'ko';
+    $('compte').innerHTML = `<h2>Compte Discord</h2>
+      <div class="ligne"><p><span class="pastille"></span>${esc(e.compte)} — ${e.connecte ? 'connecté au serveur' : 'connexion au serveur…'}</p>
+      <button class="sec petit" data-a="delier">Délier</button></div>
+      ${!e.connecte && e.erreur ? `<p class="discret">${esc(e.erreur)}</p>` : ''}`;
+  }
+  // Partie
+  $('partie').innerHTML = `<h2>Partie</h2>` + (e.heberge
+    ? `<p class="ok"><span class="pastille"></span>Tu héberges : tes amis voient ton écran.</p>`
+    : `<p class="discret">Pour jouer : lance l’Activité Switch EMU dans un salon vocal Discord et clique « Héberger depuis mon PC ».</p>`)
+    + (e.jeuEnCours ? `<div class="ligne"><p>En cours : <b>${esc(e.jeuEnCours)}</b></p><button class="sec petit" data-a="fermer-jeu">Fermer le jeu</button></div>` : '');
+  // Émulateur
+  $('emu').innerHTML = e.ryujinx
+    ? `<p class="ok"><span class="pastille"></span>Ryubing trouvé</p><p class="chemin">${esc(e.ryujinx)}</p>`
+    : `<p class="ko"><span class="pastille"></span>Ryubing introuvable : indique où se trouve <b>Ryujinx.exe</b>.</p>`;
+  // Jeux
+  $('dossiers').innerHTML = (e.dossiersJeux || []).length
+    ? e.dossiersJeux.map((d) => `<div class="ligne"><span class="chemin">${esc(d)}</span><button class="sec petit" data-a="retirer-dossier" data-v="${esc(d)}">Retirer</button></div>`).join('')
+    : `<p class="discret">Ajoute le dossier où tu ranges tes jeux (.nsp / .xci).</p>`;
+  $('jeux').innerHTML = (e.jeux || []).map((j) => `<li><span>${esc(j.titre)}</span><button class="petit" data-a="lancer" data-v="${esc(j.id)}">Lancer</button></li>`).join('')
+    || ((e.dossiersJeux || []).length ? '<li class="discret">Aucun jeu trouvé dans ces dossiers.</li>' : '');
+  // Ce PC
+  $('pc').innerHTML = (e.vigem
+    ? `<p class="ok"><span class="pastille"></span>Manettes virtuelles prêtes (ViGEmBus)</p>`
+    : `<p class="ko"><span class="pastille"></span>ViGEmBus absent : tes amis ne pourront pas jouer. <button class="petit" data-a="vigem">Installer ViGEmBus</button></p>`)
+    + (e.maj?.etat ? `<p class="discret">Mises à jour : ${esc(e.maj.etat)} ${e.maj.version ? `<button class="petit" data-a="maj-installer">Installer</button>` : ''}</p>` : '');
+  $('demarrage').checked = e.demarrage;
+}
+
+async function rafraichir() {
+  try {
+    const r = await fetch('/api/etat', { headers: { 'X-Jeton': jeton } });
+    if (r.ok) rendre(await r.json());
+  } catch { /* l'agent a été fermé */ }
+}
+rafraichir();
+setInterval(rafraichir, 1500);
+</script>
+</body>
+</html>

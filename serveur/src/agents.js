@@ -30,6 +30,43 @@ export class Agents {
     this.connexions = new Map();
     /** uid -> { debut, n } (limite les essais de code) */
     this.essais = new Map();
+    /** uid -> { jeux: [{ id, titre }], enCours: id } (bibliothèque envoyée par l'agent) */
+    this.bibliotheques = new Map();
+  }
+
+  /** Liste de jeux envoyée par l'agent : validée et bornée (le chemin des fichiers reste sur le PC). */
+  definirJeux(uid, jeux) {
+    const propres = [];
+    if (Array.isArray(jeux)) {
+      for (const j of jeux.slice(0, 500)) {
+        if (j && typeof j.id === 'string' && /^[0-9a-f]{16}$/.test(j.id) && typeof j.titre === 'string') {
+          propres.push({ id: j.id, titre: j.titre.trim().slice(0, 120) || 'Sans titre' });
+        }
+      }
+    }
+    const b = this.bibliotheques.get(uid) || { jeux: [], enCours: '' };
+    b.jeux = propres;
+    if (!propres.some((j) => j.id === b.enCours)) b.enCours = '';
+    this.bibliotheques.set(uid, b);
+  }
+
+  definirJeuEnCours(uid, id) {
+    const b = this.bibliotheques.get(uid);
+    if (b) b.enCours = b.jeux.some((j) => j.id === id) ? id : '';
+  }
+
+  jeuxDe(uid) {
+    return this.bibliotheques.get(uid)?.jeux || [];
+  }
+
+  /** Titre du jeu lancé sur le PC de uid, ou null. */
+  jeuEnCours(uid) {
+    const b = this.bibliotheques.get(uid);
+    return b?.jeux.find((j) => j.id === b.enCours) || null;
+  }
+
+  aLeJeu(uid, id) {
+    return this.jeuxDe(uid).some((j) => j.id === id);
   }
 
   demanderJumelage() {
@@ -85,6 +122,7 @@ export class Agents {
   deconnecter(uid, ws) {
     if (this.connexions.get(uid) !== ws) return false;
     this.connexions.delete(uid);
+    this.bibliotheques.delete(uid);
     return true;
   }
 
