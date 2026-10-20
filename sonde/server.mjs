@@ -35,7 +35,8 @@ function allow(ip, cost, perMinute) {
 const ipOf = (req) => (req.headers['x-forwarded-for'] || req.socket.remoteAddress || '').split(',')[0].trim();
 
 const server = createServer(async (req, res) => {
-  const url = new URL(req.url, 'http://x');
+  let url;
+  try { url = new URL(req.url, 'http://x'); } catch { res.writeHead(400); return res.end(); }  // ex. « //..%2f.env » envoyé par des robots
   if (req.method === 'GET' && url.pathname === '/api/config') {
     res.writeHead(200, { 'content-type': 'application/json' });
     return res.end(JSON.stringify({ clientId: CLIENT_ID, frames: frames.length }));
