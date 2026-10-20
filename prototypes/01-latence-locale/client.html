@@ -1,0 +1,285 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<title>Latence proto</title>
+<style>
+  body { margin: 0; background: #111; color: #eee; font: 14px system-ui, sans-serif; }
+  #stamp { position: fixed; top: 0; left: 0; }
+  main { padding: 40px 16px 16px; display: flex; gap: 16px; flex-wrap: wrap; }
+  video, #c { width: 480px; background: #000; display: block; }
+  table { border-collapse: collapse; }
+  td, th { padding: 2px 10px; text-align: right; border-bottom: 1px solid #333; }
+  th:first-child, td:first-child { text-align: left; }
+  button, select { font: inherit; padding: 6px 12px; }
+</style>
+</head>
+<body>
+<canvas id="stamp"></canvas>
+<main>
+  <div>
+    <video id="v" autoplay muted playsinline></video>
+    <canvas id="c" hidden></canvas>
+    <p>
+      <select id="mode">
+        <option value="webrtc">WebRTC (site normal)</option>
+        <option value="ws">WebSocket + WebCodecs (Activité Discord)</option>
+      </select>
+      <button id="start">Démarrer</button> <button id="pad" disabled>Tester la manette virtuelle</button>
+    </p>
+    <p id="status">Choisis un mode et clique sur Démarrer. Laisse cette fenêtre visible, au premier plan.</p>
+  </div>
+  <table id="stats"></table>
+</main>
+<script>
+// Timestamp code drawn on screen: [red][blue][16 bits of (ms & 0xffff)], one block = B px.
+const B = 24, BITS = 16;
+const params = new URLSearchParams(location.search);
+const stamp = document.getElementById('stamp');
+stamp.width = (BITS + 2) * B; stamp.height = B;
+stamp.style.width = stamp.width / devicePixelRatio + 'px';
+stamp.style.height = stamp.height / devicePixelRatio + 'px';
+const sctx = stamp.getContext('2d');
+let lastRaf = 0;
+const vsync = [];
+function drawStamp(t) {
+  if (lastRaf) { vsync.push(t - lastRaf); if (vsync.length > 200) vsync.shift(); }
+  lastRaf = t;
+  const code = Math.round(performance.now()) & 0xffff;
+  sctx.fillStyle = '#f00'; sctx.fillRect(0, 0, B, B);
+  sctx.fillStyle = '#00f'; sctx.fillRect(B, 0, B, B);
+  for (let i = 0; i < BITS; i++) {
+    sctx.fillStyle = (code >> (BITS - 1 - i)) & 1 ? '#fff' : '#000';
+    sctx.fillRect((i + 2) * B, 0, B, B);
+  }
+  requestAnimationFrame(drawStamp);
+}
+requestAnimationFrame(drawStamp);
+
+const v = document.getElementById('v');
+const status = (s) => (document.getElementById('status').textContent = s);
+const work = document.createElement('canvas');
+const wctx = work.getContext('2d', { willReadFrequently: true });
+let cal = null; // {x, y, bw}: where the stamp sits inside the video frame
+
+const isRed = (d, i) => d[i] > 180 && d[i + 1] < 80 && d[i + 2] < 80;
+const isBlue = (d, i) => d[i + 2] > 180 && d[i] < 80 && d[i + 1] < 80;
+
+function calibrate(src, w, h) {
+  work.width = w; work.height = h;
+  wctx.drawImage(src, 0, 0);
+  const d = wctx.getImageData(0, 0, w, h).data;
+  for (let y = 0; y < h; y += 2) {
+    for (let x = 0; x < w; x++) {
+      if (!isRed(d, (y * w + x) * 4)) continue;
+      let x2 = x; while (x2 < w && isRed(d, (y * w + x2) * 4)) x2++;
+      const bw = x2 - x;
+      if (bw < 8) { x = x2; continue; }
+      const bx = Math.min(w - 1, Math.round(x + bw * 1.5));
+      if (isBlue(d, (y * w + bx) * 4)) {
+        let y0 = y; while (y0 > 0 && isRed(d, ((y0 - 1) * w + x) * 4)) y0--;
+        return { x, y: y0, bw };
+      }
+      x = x2;
+    }
+  }
+  return null;
+}
+
+function readCode(src, w) {
+  const { x, y, bw } = cal;
+  const sw = Math.min(w - x, Math.ceil(bw * (BITS + 2))), sh = Math.ceil(bw);
+  if (work.width !== sw || work.height !== sh) { work.width = sw; work.height = sh; }
+  wctx.drawImage(src, x, y, sw, sh, 0, 0, sw, sh);
+  const d = wctx.getImageData(0, 0, sw, sh).data;
+  const at = (i) => (Math.floor(sh / 2) * sw + Math.floor((i + 0.5) * bw)) * 4;
+  if (!isRed(d, at(0)) || !isBlue(d, at(1))) return null;
+  let code = 0;
+  for (let i = 0; i < BITS; i++) {
+    const p = at(i + 2), luma = 0.3 * d[p] + 0.59 * d[p + 1] + 0.11 * d[p + 2];
+    code = (code << 1) | (luma > 128 ? 1 : 0);
+  }
+  return code;
+}
+
+// Returns the performance.now() at which the stamp seen in this frame was drawn, or null.
+function stampTime(src, w, h, now) {
+  if (!cal) cal = calibrate(src, w, h);
+  if (!cal) return null;
+  const code = readCode(src, w);
+  if (code === null) { cal = null; return null; }
+  const age = ((Math.round(now) & 0xffff) - code + 0x10000) & 0xffff;
+  return age < 2000 ? now - age : null;
+}
+
+const S = { glass: [], recv: [], decodeToDisplay: [], rtt: [], submit: [], xinput: [] };
+const push = (a, x) => { a.push(x); if (a.length > 600) a.shift(); };
+const q = (a, p) => { if (!a.length) return NaN; const s = [...a].sort((x, y) => x - y); return s[Math.min(s.length - 1, Math.floor(p * s.length))]; };
+const summary = (a) => ({ n: a.length, med: +q(a, 0.5).toFixed(1), p95: +q(a, 0.95).toFixed(1), min: +q(a, 0).toFixed(1) });
+let mode = 'webrtc', send = null, extra = {}, frames = 0;
+
+function onAgentMessage(m) {
+  if (m.type === 'pong') push(S.rtt, performance.now() - m.t);
+  if (m.type === 'padres') {
+    if (m.error) extra.padError = m.error;
+    if (m.submitUs !== undefined) push(S.submit, m.submitUs / 1000);
+    if (m.xinputUs !== undefined && m.seen) push(S.xinput, m.xinputUs / 1000);
+    if (m.seen === false) extra.padMissed = (extra.padMissed || 0) + 1;
+  }
+}
+function onInputReady() {
+  document.getElementById('pad').disabled = false;
+  setInterval(() => send({ type: 'ping', t: performance.now() }), 50);
+}
+
+// --- Mode 1: WebRTC (works on a normal website; Discord nulls RTCPeerConnection in Activities)
+let pc;
+function onRtcFrame(now, meta) {
+  frames++;
+  const drawn = stampTime(v, v.videoWidth, v.videoHeight, now);
+  if (drawn !== null) {
+    push(S.glass, meta.expectedDisplayTime - drawn);
+    if (meta.receiveTime) {
+      push(S.recv, meta.receiveTime - drawn);
+      push(S.decodeToDisplay, meta.expectedDisplayTime - meta.receiveTime);
+    }
+  }
+  v.requestVideoFrameCallback(onRtcFrame);
+}
+async function startWebRTC() {
+  pc = new RTCPeerConnection();
+  const tr = pc.addTransceiver('video', { direction: 'recvonly' });
+  const caps = RTCRtpReceiver.getCapabilities('video').codecs;
+  const rank = (c) => (/h264/i.test(c.mimeType) ? (/profile-level-id=640c/.test(c.sdpFmtpLine) ? 0 : 1) : 2);
+  tr.setCodecPreferences([...caps].sort((a, b) => rank(a) - rank(b)));
+  const dc = pc.createDataChannel('input', { ordered: false, maxRetransmits: 0 });
+  send = (m) => dc.send(JSON.stringify(m));
+  dc.onopen = onInputReady;
+  dc.onmessage = (e) => onAgentMessage(JSON.parse(e.data));
+  pc.ontrack = (e) => {
+    const r = e.receiver;
+    if ('jitterBufferTarget' in r) r.jitterBufferTarget = 0;
+    if ('playoutDelayHint' in r) r.playoutDelayHint = 0;
+    v.srcObject = e.streams[0] || new MediaStream([e.track]);
+    v.requestVideoFrameCallback(onRtcFrame);
+  };
+  await pc.setLocalDescription(await pc.createOffer());
+  await new Promise((res) => { if (pc.iceGatheringState === 'complete') res(); else pc.onicegatheringstatechange = () => pc.iceGatheringState === 'complete' && res(); });
+  const ans = await fetch('/offer', { method: 'POST', body: JSON.stringify(pc.localDescription) }).then((r) => r.json());
+  await pc.setRemoteDescription(ans);
+}
+
+// --- Mode 2: WebSocket + WebCodecs (the only option inside a Discord Activity)
+function codecFromSPS(b) {
+  for (let i = 0; i + 4 < b.length; i++) {
+    if (b[i] === 0 && b[i + 1] === 0 && b[i + 2] === 1 && (b[i + 3] & 0x1f) === 7) {
+      const h = (x) => x.toString(16).padStart(2, '0');
+      return 'avc1.' + h(b[i + 4]) + h(b[i + 5]) + h(b[i + 6]);
+    }
+  }
+  return null;
+}
+function startWS() {
+  v.hidden = true;
+  const c = document.getElementById('c'); c.hidden = false;
+  const cctx = c.getContext('2d');
+  const recvAt = new Map();
+  let decoder = null, ts = 0;
+  const ws = new WebSocket(`ws://${location.host}/ws`);
+  ws.binaryType = 'arraybuffer';
+  send = (m) => ws.send(JSON.stringify(m));
+  ws.onopen = onInputReady;
+  ws.onclose = () => status('WebSocket fermé.');
+  ws.onmessage = (e) => {
+    if (typeof e.data === 'string') return onAgentMessage(JSON.parse(e.data));
+    const recv = performance.now();
+    const u8 = new Uint8Array(e.data), key = (u8[0] & 1) === 1, au = u8.subarray(1);
+    if (!decoder) {
+      if (!key) return;
+      extra.codec = codecFromSPS(au);
+      decoder = new VideoDecoder({
+        output: (fr) => {
+          const now = performance.now(), r = recvAt.get(fr.timestamp);
+          recvAt.delete(fr.timestamp);
+          frames++;
+          if (c.width !== fr.displayWidth) { c.width = fr.displayWidth; c.height = fr.displayHeight; }
+          cctx.drawImage(fr, 0, 0);
+          const drawn = stampTime(fr, fr.displayWidth, fr.displayHeight, now);
+          fr.close();
+          if (drawn === null) return;
+          push(S.recv, r - drawn);
+          // The canvas is composited on the next animation frame.
+          requestAnimationFrame((t) => { push(S.glass, t - drawn); push(S.decodeToDisplay, t - r); });
+        },
+        error: (err) => { extra.decodeError = String(err); decoder = null; },
+      });
+      decoder.configure({ codec: extra.codec, optimizeForLatency: true, hardwareAcceleration: 'prefer-hardware' });
+    }
+    if (decoder.decodeQueueSize > 3) extra.decodeBacklog = (extra.decodeBacklog || 0) + 1;
+    recvAt.set(ts, recv);
+    decoder.decode(new EncodedVideoChunk({ type: key ? 'key' : 'delta', timestamp: ts++, data: au }));
+  };
+}
+
+document.getElementById('start').onclick = async () => {
+  document.getElementById('start').disabled = true;
+  mode = document.getElementById('mode').value;
+  document.getElementById('mode').disabled = true;
+  if (mode === 'ws') startWS(); else await startWebRTC();
+  status(`Connecté (${mode}). Mesure en cours… le rapport part tout seul après 30 s.`);
+  setTimeout(sendReport, 30000);
+};
+
+document.getElementById('pad').onclick = async () => {
+  for (let i = 0; i < 40; i++) {
+    send({ type: 'pad', seq: i, buttons: i % 2 ? 0x1000 : 0 });
+    await new Promise((r) => setTimeout(r, 100));
+  }
+};
+
+async function inboundStats() {
+  if (!pc) return {};
+  const out = {};
+  (await pc.getStats()).forEach((s) => {
+    if (s.type === 'inbound-rtp' && s.kind === 'video') Object.assign(out, {
+      decoder: s.decoderImplementation, fps: s.framesPerSecond, w: s.frameWidth, h: s.frameHeight,
+      decodeMs: s.framesDecoded ? +(1000 * s.totalDecodeTime / s.framesDecoded).toFixed(2) : null,
+      jitterBufferMs: s.jitterBufferEmittedCount ? +(1000 * s.jitterBufferDelay / s.jitterBufferEmittedCount).toFixed(2) : null,
+      framesDropped: s.framesDropped, packetsLost: s.packetsLost,
+    });
+    if (s.type === 'codec' && s.mimeType?.startsWith('video')) out.mime = s.mimeType + ' ' + (s.sdpFmtpLine || '');
+  });
+  return out;
+}
+
+async function report() {
+  return {
+    mode, date: new Date().toISOString(), ua: navigator.userAgent, dpr: devicePixelRatio,
+    vsyncMs: +q(vsync, 0.5).toFixed(2), framesShown: frames,
+    video: await inboundStats(),
+    ms: Object.fromEntries(Object.entries(S).map(([k, a]) => [k, summary(a)])), extra,
+  };
+}
+async function sendReport() {
+  const r = await report();
+  await fetch('/report?mode=' + mode, { method: 'POST', body: JSON.stringify(r, null, 2) });
+  status(`Rapport envoyé (resultats-${mode}.json). La mesure continue.`);
+}
+const labels = { glass: 'Écran → image affichée', recv: 'Écran → réception', decodeToDisplay: 'Réception → affichage', rtt: 'Aller-retour entrée', submit: 'Envoi ViGEm', xinput: 'ViGEm → visible XInput' };
+setInterval(async () => {
+  const r = await report();
+  let h = '<tr><th>ms</th><th>médiane</th><th>p95</th><th>min</th><th>n</th></tr>';
+  for (const [k, s] of Object.entries(r.ms)) h += `<tr><td>${labels[k]}</td><td>${s.med}</td><td>${s.p95}</td><td>${s.min}</td><td>${s.n}</td></tr>`;
+  h += `<tr><td colspan=5 style="text-align:left">${JSON.stringify({ ...r.video, ...r.extra, vsync: r.vsyncMs })}</td></tr>`;
+  document.getElementById('stats').innerHTML = h;
+}, 1000);
+
+// ?auto=webrtc|ws : démarre tout seul et lance le test de manette après 5 s (essais automatisés)
+if (params.has('auto')) {
+  document.getElementById('mode').value = params.get('auto') === 'ws' ? 'ws' : 'webrtc';
+  document.getElementById('start').click();
+  setTimeout(() => document.getElementById('pad').click(), 5000);
+}
+</script>
+</body>
+</html>

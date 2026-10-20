@@ -1,0 +1,16 @@
+{
+  "name": "switch-emu-sonde",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "esbuild src/sonde.js --bundle --format=esm --target=es2022 --minify --outfile=public/sonde.js",
+    "start": "node server.mjs"
+  },
+  "dependencies": {
+    "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "@discord/embedded-app-sdk": "^2.0.0",
+    "esbuild": "^0.25.0"
+  }
+}
