@@ -1,0 +1,19 @@
+# Binaires et sorties des prototypes
+*.exe
+*.dll
+build/
+resultats*.json
+agent.log
+
+# Secrets
+.env
+
+# Jeux, clés et firmwares : jamais dans le dépôt
+*.nsp
+*.xci
+*.nca
+*.keys
+prod.keys
+title.keys
+node_modules/
+sonde/public/sonde.js
