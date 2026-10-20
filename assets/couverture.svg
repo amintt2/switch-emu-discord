@@ -1,0 +1,41 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 576" width="1024" height="576">
+  <defs>
+    <linearGradient id="fond" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#2a1b6e"/>
+      <stop offset="1" stop-color="#0b2a4a"/>
+    </linearGradient>
+    <radialGradient id="halo" cx="0.27" cy="0.55" r="0.45">
+      <stop offset="0" stop-color="#7c5cff" stop-opacity="0.6"/>
+      <stop offset="1" stop-color="#7c5cff" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="accent" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#00e0b8"/>
+      <stop offset="1" stop-color="#8a6bff"/>
+    </linearGradient>
+    <filter id="ombre" x="-20%" y="-20%" width="140%" height="160%">
+      <feDropShadow dx="0" dy="10" stdDeviation="14" flood-color="#05061a" flood-opacity="0.55"/>
+    </filter>
+    <g id="manette">
+      <path fill="#ffffff" d="M 300 430 H 724 C 818 430 872 486 896 584 L 934 740 C 952 816 900 866 838 842 C 796 826 768 790 742 752 L 706 700 H 318 L 282 752 C 256 790 228 826 186 842 C 124 866 72 816 90 740 L 128 584 C 152 486 206 430 300 430 Z"/>
+      <g fill="#2a1b6e"><rect x="252" y="532" width="44" height="132" rx="10"/><rect x="208" y="576" width="132" height="44" rx="10"/></g>
+      <circle cx="770" cy="548" r="27" fill="#00c9a7"/><circle cx="824" cy="602" r="27" fill="#8a6bff"/>
+      <circle cx="716" cy="602" r="27" fill="#8a6bff"/><circle cx="770" cy="656" r="27" fill="#00c9a7"/>
+      <circle cx="420" cy="654" r="40" fill="#dfe3f0"/><circle cx="604" cy="654" r="40" fill="#dfe3f0"/>
+    </g>
+  </defs>
+  <rect width="1024" height="576" fill="url(#fond)"/>
+  <circle cx="280" cy="316" r="300" fill="url(#halo)"/>
+  <g transform="translate(70 70) scale(0.42)">
+    <g fill="none" stroke="url(#accent)" stroke-linecap="round" stroke-width="40">
+      <path d="M 404 286 A 150 150 0 0 1 620 286"/><path d="M 340 220 A 240 240 0 0 1 684 220"/>
+    </g>
+    <circle cx="512" cy="350" r="34" fill="url(#accent)"/>
+    <g filter="url(#ombre)"><use href="#manette"/></g>
+  </g>
+  <g font-family="'Segoe UI Variable Display', 'Segoe UI', system-ui, sans-serif" fill="#ffffff">
+    <text x="520" y="270" font-size="84" font-weight="800" letter-spacing="-1">Switch EMU</text>
+    <text x="524" y="330" font-size="30" font-weight="500" fill="#c9cdf2">Jouez ensemble dans le salon vocal</text>
+    <rect x="524" y="364" width="300" height="44" rx="22" fill="url(#accent)"/>
+    <text x="674" y="393" font-size="20" font-weight="700" fill="#0d1030" text-anchor="middle">Manette · Clavier · Tactile</text>
+  </g>
+</svg>
