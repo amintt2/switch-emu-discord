@@ -17,6 +17,7 @@ let etat: EtatSalle | null = null;
 let lecteur: Lecteur | null = null;
 let attenteJeton: ((f: Flux) => void) | null = null;
 let formulaireOuvert = false;
+let apercu = false;  // l'hôte peut regarder son propre flux
 
 function toast(texte: string) {
   const t = $('toast');
@@ -67,7 +68,11 @@ function afficher() {
   actions.replaceChildren();
   const jeSuisHote = salle.hote?.uid === moi.uid;
   if (jeSuisHote) {
-    actions.append(texte('Tu héberges : tes amis voient l’écran de ton PC.'), bouton('Arrêter', () => envoyer({ type: 'arreter' }), true));
+    actions.append(
+      texte('Tu héberges : tes amis voient l’écran de ton PC.'),
+      bouton(apercu ? 'Masquer l’aperçu' : 'Voir l’aperçu', () => { apercu = !apercu; afficher(); }, true),
+      bouton('Arrêter', () => { apercu = false; envoyer({ type: 'arreter' }); }, true),
+    );
   } else if (!salle.hote) {
     if (m.agent === 'en-ligne') {
       actions.append(texte('Ton PC est prêt.'), bouton('Héberger depuis mon PC', () => envoyer({ type: 'heberger' })));
@@ -79,13 +84,14 @@ function afficher() {
   }
 
   // La scène
-  if (jeSuisHote) voile('Tu héberges la partie', 'Tes amis voient l’écran de ton PC. Joue directement sur ton PC.');
+  if (jeSuisHote && !apercu) voile('Tu héberges la partie', 'Tes amis voient l’écran de ton PC. Joue directement sur ton PC. « Voir l’aperçu » montre ce qu’ils reçoivent.');
   else if (!salle.hote) voile('Personne n’héberge pour l’instant', 'Celui qui a le jeu sur son PC clique « Héberger depuis mon PC ».');
   else if (salle.hote.absent) voile(`${salle.hote.nom} s’est absenté…`, 'La partie reprend s’il revient dans les 30 secondes.');
 
   // Le flux
-  if (etat.flux && !lecteur) demarrerLecteur(etat.flux);
-  else if (!etat.flux && lecteur) { lecteur.arreter(); lecteur = null; $('stats').hidden = true; }
+  const regarder = etat.flux && (!jeSuisHote || apercu);
+  if (regarder && !lecteur) demarrerLecteur(etat.flux!);
+  else if (!regarder && lecteur) { lecteur.arreter(); lecteur = null; $('stats').hidden = true; }
   if (etat.flux && attenteJeton) { attenteJeton(etat.flux); attenteJeton = null; }
 }
 

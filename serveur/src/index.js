@@ -40,7 +40,8 @@ function diffuser(salleId) {
   for (const j of joueurs.get(salleId) || []) {
     if (j.ws.readyState !== 1) continue;
     const moi = { agent: agents.enLigne(j.uid) ? 'en-ligne' : 'absent' };
-    const flux = vue.hote && !vue.hote.absent && vue.hote.uid !== j.uid
+    // L'hôte reçoit aussi un accès : il peut afficher l'aperçu de ce que voient ses amis.
+    const flux = vue.hote && !vue.hote.absent
       ? { relais: listeRelais().map((r) => ({ nom: r.nom, discord: r.discord, web: r.web })), jeton: jetonRelais(salleId, 'ami', j.uid) }
       : null;
     j.ws.send(JSON.stringify({ type: 'etat', salle: vue, moi, flux }));
