@@ -15,6 +15,7 @@ export class Salle {
     this.state = state;
     this.hote = null;
     this.amis = new Map();
+    this.uids = new Map();  // id de connexion -> uid Discord (pour retirer quelqu'un)
     this.suivant = 1;
   }
 
@@ -47,6 +48,7 @@ export class Salle {
   brancherAmi(ws, uid) {
     const id = this.suivant++;
     this.amis.set(id, ws);
+    this.uids.set(id, uid);
     this.versHote({ type: 'arrivee', de: id, uid });
     if (!this.hote) ws.send(JSON.stringify({ type: 'pas-d-hote' }));
     ws.addEventListener('message', (e) => {
@@ -58,7 +60,7 @@ export class Salle {
       m.uid = uid;
       this.versHote(m);
     });
-    ws.addEventListener('close', () => { this.amis.delete(id); this.versHote({ type: 'depart', de: id }); });
+    ws.addEventListener('close', () => { this.amis.delete(id); this.uids.delete(id); this.versHote({ type: 'depart', de: id }); });
   }
 
   versHote(m) {
@@ -73,6 +75,11 @@ export class Salle {
     if (typeof d === 'string') {
       let m;
       try { m = JSON.parse(d); } catch { return; }
+      // L'hôte retire quelqu'un : on ferme ses connexions.
+      if (m.type === 'exclure' && typeof m.uid === 'string') {
+        for (const [id, w] of this.amis) if (this.uids.get(id) === m.uid) try { w.close(4003, 'retiré par l’hôte'); } catch {}
+        return;
+      }
       const a = m.a;
       delete m.a;
       envoyer(a, JSON.stringify(m));

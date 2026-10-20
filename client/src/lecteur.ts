@@ -90,8 +90,8 @@ export class Lecteur {
     });
   }
 
-  /** Réponses de l'hôte sur la manette (place obtenue ou refus). */
-  surPlace: (joueur: number, raison?: string) => void = () => {};
+  /** Le PC de l'hôte ne peut pas créer de manette virtuelle (ViGEmBus absent…). */
+  surManetteIndisponible: (raison: string) => void = () => {};
 
   /** Envoie une commande (manette) à l'hôte, par le relais. */
   envoyerCommande(m: object) {
@@ -107,8 +107,8 @@ export class Lecteur {
     try { m = JSON.parse(t); } catch { return; }
     if (m.type === 'pong' && m.t !== undefined && m.s !== undefined) {
       this.horloge.ajouter(m.t, performance.timeOrigin + performance.now(), m.s);
-    } else if (m.type === 'place') {
-      this.surPlace(m.joueur ?? 0, m.raison);
+    } else if (m.type === 'manette-indisponible') {
+      this.surManetteIndisponible(m.raison ?? 'manette indisponible');
     } else if (m.type === 'hote-parti' || m.type === 'pas-d-hote') {
       this.surEtat('attente-image', 'Le PC de l’hôte n’envoie pas encore d’image…');
     }

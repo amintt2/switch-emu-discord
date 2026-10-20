@@ -86,6 +86,8 @@ test('réglages lus sur disque : les valeurs invalides sont écartées', () => {
   assert.equal(r.manettes.standard.a, 'b3');
   assert.equal(r.manettes.standard.b, undefined);
   assert.deepEqual(nettoyer('nimporte quoi'), reglagesDefaut());
+  assert.equal(nettoyer({ version: 2, entree: 'clavier' }).entree, 'clavier');
+  assert.equal(nettoyer({ version: 2, entree: 'souris' }).entree, 'tout');
 });
 
 test('manette + clavier combinés', () => {

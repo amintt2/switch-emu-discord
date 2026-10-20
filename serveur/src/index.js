@@ -48,6 +48,12 @@ function diffuser(salleId) {
   }
 }
 
+/** Dit à l'agent de l'hôte qui joue sur quelle place (les amis à distance seulement). */
+function envoyerPlaces(salleId) {
+  const s = salles.get(salleId);
+  if (s?.hote) agents.envoyer(s.hote, { type: 'places', salle: salleId, places: salles.placesDistantes(salleId) });
+}
+
 /** Démarre ou arrête le flux sur le PC de l'hôte. */
 function commanderAgent(uid, salleId, heberger) {
   if (heberger) {
@@ -60,7 +66,7 @@ function commanderAgent(uid, salleId, heberger) {
 }
 
 setInterval(() => {
-  for (const id of salles.tick()) diffuser(id);
+  for (const id of salles.tick()) { diffuser(id); envoyerPlaces(id); }
 }, 2000).unref();
 
 // ------------------------------------------------------------------ connexion des joueurs
@@ -124,7 +130,7 @@ app.register(async (scope) => {
     const s = session(request.query.session);
     if (!s) return ws.close(4001, 'session invalide');
     const moi = { ws, uid: s.uid };
-    salles.rejoindre(s.salle, s);
+    if (salles.rejoindre(s.salle, s).exclu) return ws.close(4003, 'retiré par l’hôte');
     if (!joueurs.has(s.salle)) joueurs.set(s.salle, new Set());
     joueurs.get(s.salle).add(moi);
     diffuser(s.salle);
@@ -136,9 +142,23 @@ app.register(async (scope) => {
         const r = salles.heberger(s.salle, s.uid);
         if (r.erreur) return ws.send(JSON.stringify({ type: 'erreur', texte: r.erreur }));
         commanderAgent(s.uid, s.salle, true);
+        envoyerPlaces(s.salle);
         diffuser(s.salle);
       } else if (m?.type === 'arreter') {
         if (salles.arreter(s.salle, s.uid)) { commanderAgent(s.uid, s.salle, false); diffuser(s.salle); }
+      } else if (m?.type === 'place') {
+        const r = salles.prendrePlace(s.salle, s.uid, Number(m.joueur));
+        if (r.erreur) return ws.send(JSON.stringify({ type: 'erreur', texte: r.erreur }));
+        diffuser(s.salle);
+        envoyerPlaces(s.salle);
+      } else if (m?.type === 'exclure' && typeof m.uid === 'string') {
+        const r = salles.exclure(s.salle, s.uid, m.uid);
+        if (r.erreur) return ws.send(JSON.stringify({ type: 'erreur', texte: r.erreur }));
+        // On coupe tout : la page de la personne, et sa vidéo au relais (via l'agent).
+        for (const j of joueurs.get(s.salle) || []) if (j.uid === m.uid) j.ws.close(4003, 'retiré par l’hôte');
+        agents.envoyer(s.uid, { type: 'exclure', salle: s.salle, uid: m.uid });
+        diffuser(s.salle);
+        envoyerPlaces(s.salle);
       } else if (m?.type === 'jeton') {
         diffuser(s.salle);  // renvoie un état avec un jeton neuf (pour se reconnecter au relais)
       }
@@ -146,7 +166,7 @@ app.register(async (scope) => {
     ws.on('close', () => {
       joueurs.get(s.salle)?.delete(moi);
       if (!joueurs.get(s.salle)?.size) joueurs.delete(s.salle);
-      if (salles.quitter(s.salle, s.uid)) diffuser(s.salle);
+      if (salles.quitter(s.salle, s.uid)) { diffuser(s.salle); envoyerPlaces(s.salle); }
     });
   });
 
@@ -166,6 +186,7 @@ app.register(async (scope) => {
       // L'agent redemande un jeton pour se reconnecter au relais, seulement s'il héberge encore.
       if (m?.type === 'jeton' && salles.get(m.salle)?.hote === a.uid) {
         ws.send(JSON.stringify({ type: 'jeton', salle: m.salle, jeton: jetonRelais(m.salle, 'hote', a.uid) }));
+        envoyerPlaces(m.salle);
       } else if (m?.type === 'etat' && typeof m.salle === 'string' && salles.get(m.salle)?.hote === a.uid) {
         const texte = typeof m.erreur === 'string' ? m.erreur.slice(0, 200) : null;
         for (const j of joueurs.get(m.salle) || []) {

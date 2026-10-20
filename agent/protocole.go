@@ -61,4 +61,7 @@ type ordreServeur struct {
 	Relais []string `json:"relais"`
 	Jeton  string   `json:"jeton"`
 	Nom    string   `json:"nom"`
+	// "places" : uid -> place (1 à 4) des joueurs à distance ; "exclure" : uid de la personne retirée.
+	Places map[string]int `json:"places"`
+	UID    string         `json:"uid"`
 }

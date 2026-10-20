@@ -17,6 +17,11 @@ export class EnvoiManette {
   /** Quand l'assistant de réglage écoute la manette, on n'envoie rien au jeu. */
   enPause = false;
   manettes: ManetteVue[] = [];
+  /** Vrai quand le joueur a une place (sinon il est spectateur : rien n'est envoyé). */
+  peutJouer: () => boolean = () => true;
+  /** Appelé quand un spectateur touche sa manette : on peut lui proposer une place (au plus toutes les 3 s). */
+  surEnvieDeJouer: () => void = () => {};
+  private derniereEnvie = 0;
   private envoyer: (m: object) => void;
   private reglages: () => Reglages;
   private surChangement: () => void;
@@ -51,6 +56,7 @@ export class EnvoiManette {
 
   private bas = (e: KeyboardEvent) => {
     if (this.enPause || (e.target as HTMLElement)?.tagName === 'INPUT') return;
+    if (this.reglages().entree === 'manette') return;
     if (!estToucheConnue(e.code, this.reglages().clavier)) return;
     e.preventDefault();
     this.touches.add(e.code);
@@ -61,11 +67,12 @@ export class EnvoiManette {
 
   private tick() {
     const r = this.reglages();
-    const sources = [depuisClavier(this.touches, r.clavier)];
+    const entree = r.entree ?? 'tout';
+    const sources = entree === 'manette' ? [] : [depuisClavier(this.touches, r.clavier)];
     const vues: ManetteVue[] = [];
     for (const g of navigator.getGamepads?.() ?? []) {
       if (!g || !g.connected) continue;
-      sources.push(depuisGamepad(g, profilPour(r, g.id)));
+      if (entree !== 'clavier') sources.push(depuisGamepad(g, profilPour(r, g.id)));
       vues.push({ id: g.id, nom: g.id.replace(/\s*\(.*\)\s*$/, '') || 'Manette', standard: g.mapping === 'standard', profilPerso: !!r.manettes[g.id] });
     }
     if (vues.map((v) => v.id).join() !== this.manettes.map((v) => v.id).join()) {
@@ -74,6 +81,15 @@ export class EnvoiManette {
     }
     if (this.enPause) return;
     const etat = fusionner(...sources);
+    if (!this.peutJouer()) {
+      // Spectateur : on n'envoie rien. S'il touche sa manette, on peut lui proposer une place.
+      if (!auRepos(etat) && performance.now() - this.derniereEnvie > 3000) {
+        this.derniereEnvie = performance.now();
+        this.surEnvieDeJouer();
+      }
+      if (this.actif) { this.actif = false; this.envoyer({ type: 'manette', s: ++this.seq, ...REPOS }); }
+      return;
+    }
     if (!this.actif) {
       if (auRepos(etat)) return;
       this.actif = true;

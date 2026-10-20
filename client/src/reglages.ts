@@ -13,8 +13,12 @@ export type Sortie =
 
 export type Profil = Partial<Record<Sortie, string>>;
 
+/** Avec quoi le joueur joue : sa manette, son clavier, ou les deux. */
+export type Entree = 'tout' | 'manette' | 'clavier';
+
 export interface Reglages {
   version: 2;
+  entree?: Entree;
   /** commande -> event.code (position physique de la touche) */
   clavier: Partial<Record<Sortie, string>>;
   /** "standard" (toutes les manettes reconnues) ou identifiant d'un modèle -> profil */
@@ -47,7 +51,7 @@ export const CLAVIER_DEFAUT: Partial<Record<Sortie, string>> = {
   'ry+': 'Numpad8', 'ry-': 'Numpad5', 'rx-': 'Numpad4', 'rx+': 'Numpad6',
 };
 
-export const reglagesDefaut = (): Reglages => ({ version: 2, clavier: { ...CLAVIER_DEFAUT }, manettes: { standard: { ...PROFIL_STANDARD } } });
+export const reglagesDefaut = (): Reglages => ({ version: 2, entree: 'tout', clavier: { ...CLAVIER_DEFAUT }, manettes: { standard: { ...PROFIL_STANDARD } } });
 
 const CLE = 'switch-emu.reglages';
 const SOURCE = /^(b\d{1,2}|a\d{1,2}[+-])$/;
@@ -63,6 +67,7 @@ export function nettoyer(brut: unknown): Reglages {
   const r = reglagesDefaut();
   if (!brut || typeof brut !== 'object' || (brut as Reglages).version !== 2) return r;
   const b = brut as Reglages;
+  if (b.entree === 'manette' || b.entree === 'clavier' || b.entree === 'tout') r.entree = b.entree;
   if (b.clavier && typeof b.clavier === 'object') {
     r.clavier = {};
     for (const s of SORTIES) if (typeof b.clavier[s] === 'string' && TOUCHE.test(b.clavier[s]!)) r.clavier[s] = b.clavier[s];

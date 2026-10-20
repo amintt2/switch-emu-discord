@@ -3,12 +3,13 @@ import { api, getSession, wsUrl, type Utilisateur } from './api.ts';
 import { dansDiscord, seConnecter } from './auth.ts';
 import { Lecteur, type Flux, type Stats } from './lecteur.ts';
 import { EnvoiManette } from './envoi.ts';
-import { ouvrirReglages } from './ecranReglages.ts';
-import { charger, enregistrer, type Reglages } from './reglages.ts';
+import { nomTouche, ouvrirReglages } from './ecranReglages.ts';
+import { charger, enregistrer, type Entree, type Reglages } from './reglages.ts';
 
-interface Participant extends Utilisateur { hote: boolean }
+interface Participant extends Utilisateur { hote: boolean; place: number }
+interface Place { uid: string; nom: string; local: boolean; absent: boolean }
 interface EtatSalle {
-  salle: { participants: Participant[]; hote: { uid: string; nom: string; absent: boolean } | null };
+  salle: { participants: Participant[]; hote: { uid: string; nom: string; absent: boolean } | null; places: (Place | null)[] };
   moi: { agent: 'en-ligne' | 'absent' };
   flux: Flux | null;
 }
@@ -22,7 +23,9 @@ let attenteJeton: ((f: Flux) => void) | null = null;
 let formulaireOuvert = false;
 let apercu = false;  // l'hôte peut regarder son propre flux (et jouer depuis cet appareil)
 let envoiManette: EnvoiManette | null = null;
-let maPlace: { joueur: number; raison?: string } | null = null;
+let manetteIndisponible = '';
+let spectateurVoulu = false;  // le joueur a choisi de regarder : on ne lui donne pas de place tout seul
+let confirmerRetrait = '';    // uid en attente de confirmation (deuxième clic)
 let reglages: Reglages = charger();
 
 function toast(texte: string) {
@@ -43,37 +46,85 @@ function voile(titre: string | null, texte = '') {
   $('message').append(b, document.createTextNode(texte));
 }
 
-function avatar(p: Utilisateur) {
-  const d = document.createElement('span');
-  d.className = 'avatar';
+function el<K extends keyof HTMLElementTagNameMap>(tag: K, props: Record<string, unknown> = {}, ...enfants: (Node | string)[]): HTMLElementTagNameMap[K] {
+  const n = Object.assign(document.createElement(tag), props) as HTMLElementTagNameMap[K];
+  n.append(...enfants);
+  return n;
+}
+const texte = (t: string) => el('p', { textContent: t });
+const bouton = (t: string, action: () => void, secondaire = false) =>
+  el('button', { textContent: t, className: secondaire ? 'secondaire' : '', type: 'button', onclick: action });
+
+function avatar(p: { nom: string; avatar?: string | null }) {
+  const d = el('span', { className: 'avatar' });
   if (p.avatar) {
-    const img = document.createElement('img');
-    img.src = p.avatar;
-    img.alt = '';
+    const img = el('img', { src: p.avatar, alt: '' });
     img.onerror = () => { img.remove(); d.textContent = p.nom.slice(0, 1).toUpperCase(); };
     d.append(img);
   } else d.textContent = p.nom.slice(0, 1).toUpperCase();
   return d;
 }
 
+const maPlace = () => (etat ? etat.salle.places.findIndex((p) => p?.uid === moi.uid) + 1 : 0);
+const jeSuisHote = () => etat?.salle.hote?.uid === moi.uid;
+/** Je joue depuis cet appareil : une place, et pas « J1 sur mon PC » pour l'hôte. */
+const jeJoueIci = () => {
+  const n = maPlace();
+  return n > 0 && !etat!.salle.places[n - 1]!.local;
+};
+
+function prendrePlace(n: number) {
+  spectateurVoulu = n === 0;
+  envoyer({ type: 'place', joueur: n });
+}
+
 function afficher() {
   if (!etat) return;
   const { salle, moi: m } = etat;
-  const ul = $('participants');
-  ul.replaceChildren(...salle.participants.map((p) => {
-    const li = document.createElement('li');
-    const nom = document.createElement('span');
-    nom.className = 'nom';
-    nom.textContent = p.uid === moi.uid ? `${p.nom} (toi)` : p.nom;
-    li.append(avatar(p), nom);
-    if (p.hote) { const b = document.createElement('span'); b.className = 'badge'; b.textContent = 'Hôte'; li.append(b); }
+  const hote = jeSuisHote();
+
+  // Les places J1 à J4 (pendant une partie)
+  $('bloc-places').hidden = !salle.hote;
+  $('places').replaceChildren(...salle.places.map((p, i) => {
+    const n = i + 1;
+    const li = el('li', { className: p?.uid === moi.uid ? 'moi' : '' }, el('span', { className: 'joueur', textContent: `J${n}` }));
+    if (!p) {
+      li.append(el('span', { className: 'nom libre', textContent: 'Libre' }), bouton('Prendre', () => prendrePlace(n), true));
+    } else {
+      const qui = p.uid === moi.uid ? 'Toi' : p.nom;
+      const ou = p.local ? (p.uid === moi.uid ? ' (sur ton PC)' : ' (sur son PC)') : '';
+      li.append(el('span', { className: 'nom', textContent: qui + ou + (p.absent ? ' — déconnecté' : '') }));
+      if (p.uid === moi.uid) li.append(bouton(p.local ? 'Laisser J1' : 'Quitter', () => prendrePlace(0), true));
+    }
+    return li;
+  }));
+
+  // Les participants (l'hôte peut retirer quelqu'un, avec un deuxième clic pour confirmer)
+  $('participants').replaceChildren(...salle.participants.map((p) => {
+    const li = el('li', {}, avatar(p), el('span', { className: 'nom', textContent: p.uid === moi.uid ? `${p.nom} (toi)` : p.nom }));
+    if (p.hote) li.append(el('span', { className: 'badge', textContent: 'Hôte' }));
+    else if (p.place) li.append(el('span', { className: 'badge joue', textContent: `J${p.place}` }));
+    if (hote && p.uid !== moi.uid) {
+      const confirmer = confirmerRetrait === p.uid;
+      const b = bouton(confirmer ? 'Confirmer ?' : 'Retirer', () => {
+        if (!confirmer) {
+          confirmerRetrait = p.uid;
+          afficher();
+          setTimeout(() => { if (confirmerRetrait === p.uid) { confirmerRetrait = ''; afficher(); } }, 4000);
+          return;
+        }
+        confirmerRetrait = '';
+        envoyer({ type: 'exclure', uid: p.uid });
+      }, !confirmer);
+      b.classList.add('retirer');
+      li.append(b);
+    }
     return li;
   }));
 
   const actions = $('actions');
   actions.replaceChildren();
-  const jeSuisHote = salle.hote?.uid === moi.uid;
-  if (jeSuisHote) {
+  if (hote) {
     actions.append(
       texte('Tu héberges : tes amis voient l’écran de ton PC.'),
       bouton(apercu ? 'Masquer l’aperçu' : 'Voir l’aperçu', () => { apercu = !apercu; afficher(); }, true),
@@ -88,41 +139,25 @@ function afficher() {
       else actions.append(bouton('Lier mon PC', () => { formulaireOuvert = true; afficher(); }, true));
     }
   }
-
   if (lecteur) actions.prepend(blocManette());
 
   // La scène
-  if (jeSuisHote && !apercu) voile('Tu héberges la partie', 'Tes amis voient l’écran de ton PC. Joue directement sur ton PC. « Voir l’aperçu » montre ce qu’ils reçoivent.');
+  if (hote && !apercu) voile('Tu héberges la partie', 'Tes amis voient l’écran de ton PC. Joue directement sur ton PC. « Voir l’aperçu » montre ce qu’ils reçoivent.');
   else if (!salle.hote) voile('Personne n’héberge pour l’instant', 'Celui qui a le jeu sur son PC clique « Héberger depuis mon PC ».');
   else if (salle.hote.absent) voile(`${salle.hote.nom} s’est absenté…`, 'La partie reprend s’il revient dans les 30 secondes.');
 
   // Le flux
-  const regarder = etat.flux && (!jeSuisHote || apercu);
+  const regarder = etat.flux && (!hote || apercu);
   if (regarder && !lecteur) demarrerLecteur(etat.flux!);
   else if (!regarder && lecteur) arreterLecteur();
   if (etat.flux && attenteJeton) { attenteJeton(etat.flux); attenteJeton = null; }
 }
 
-function texte(t: string) { const p = document.createElement('p'); p.textContent = t; return p; }
-function bouton(t: string, action: () => void, secondaire = false) {
-  const b = document.createElement('button');
-  b.textContent = t;
-  if (secondaire) b.className = 'secondaire';
-  b.onclick = action;
-  return b;
-}
-
 function formulaireCode() {
-  const f = document.createElement('form');
-  f.className = 'code';
-  const input = document.createElement('input');
-  input.placeholder = 'ABCD-EFGH';
-  input.maxLength = 9;
-  input.autocomplete = 'off';
+  const input = el('input', { placeholder: 'ABCD-EFGH', maxLength: 9, autocomplete: 'off' });
   input.setAttribute('aria-label', 'Code affiché par l’agent');
-  const ok = document.createElement('button');
-  ok.textContent = 'Lier';
-  f.append(input, ok);
+  const ok = el('button', { textContent: 'Lier' });
+  const f = el('form', { className: 'code' }, input, ok);
   f.onsubmit = async (e) => {
     e.preventDefault();
     ok.disabled = true;
@@ -156,8 +191,16 @@ function demarrerLecteur(flux: Flux) {
       setTimeout(() => reject(new Error('pas de jeton')), 8000);
     }),
   );
-  lecteur.surPlace = (joueur, raison) => { maPlace = { joueur, raison }; majManette(); };
+  lecteur.surManetteIndisponible = (raison) => { manetteIndisponible = raison; majManette(); };
   envoiManette = new EnvoiManette((m) => lecteur?.envoyerCommande(m), () => reglages, () => majManette());
+  envoiManette.peutJouer = jeJoueIci;
+  // Un spectateur touche sa manette : on lui donne la première place libre (sauf s'il a choisi de regarder).
+  envoiManette.surEnvieDeJouer = () => {
+    if (spectateurVoulu || !etat) return;
+    const libre = etat.salle.places.findIndex((p) => !p) + 1;
+    if (libre) envoyer({ type: 'place', joueur: libre });
+    else toast('Toutes les places sont prises : tu regardes en spectateur.');
+  };
   envoiManette.demarrer();
   lecteur.demarrer(flux);
   afficher();
@@ -166,17 +209,15 @@ function demarrerLecteur(flux: Flux) {
 function arreterLecteur() {
   envoiManette?.arreter();
   envoiManette = null;
-  maPlace = null;
+  manetteIndisponible = '';
   lecteur?.arreter();
   lecteur = null;
   $('stats').hidden = true;
 }
 
-/** Encadré « ta manette » : place obtenue, manette détectée, aide pour le clavier. */
+/** Encadré « ta manette » : place, avec quoi tu joues, manette détectée, réglages. */
 function blocManette() {
-  const d = document.createElement('div');
-  d.id = 'manette';
-  d.className = 'manette';
+  const d = el('div', { id: 'manette', className: 'manette' });
   remplirManette(d);
   return d;
 }
@@ -188,44 +229,56 @@ function majManette() {
 
 function remplirManette(d: HTMLElement) {
   const manettes = envoiManette?.manettes ?? [];
-  const titre = document.createElement('strong');
-  const detail = document.createElement('p');
-  if (maPlace && maPlace.joueur > 0) {
-    titre.textContent = `Tu joues : J${maPlace.joueur}`;
-    detail.textContent = manettes.length ? `Manette : ${manettes.map((m) => m.nom).join(', ')}` : 'Au clavier (ou branche une manette).';
-  } else if (maPlace?.raison) {
-    titre.textContent = 'Pas de manette pour toi';
-    detail.textContent = maPlace.raison;
+  const n = maPlace();
+  const enfants: Node[] = [];
+  if (manetteIndisponible) {
+    enfants.push(el('strong', { textContent: 'Pas de manette pour toi' }), texte(manetteIndisponible));
+  } else if (n && jeJoueIci()) {
+    const entree = reglages.entree ?? 'tout';
+    const avec = entree === 'clavier' ? 'au clavier' : manettes.length ? `avec ${manettes.map((m) => m.nom).join(', ')}` : 'au clavier (ou branche une manette)';
+    enfants.push(el('strong', { textContent: `Tu joues : J${n}` }), texte(`Tu joues ${avec}.`));
+  } else if (n) {
+    enfants.push(el('strong', { textContent: `J${n} : ta manette sur ton PC` }), texte('Joue directement sur ton PC. Prends une autre place pour jouer depuis cet appareil.'));
   } else {
-    titre.textContent = 'Pour jouer';
-    detail.textContent = manettes.length ? `${manettes[0].nom} détectée : appuie sur un bouton.` : 'Appuie sur un bouton de ta manette, ou sur une touche du clavier.';
+    enfants.push(el('strong', { textContent: 'Tu regardes' }),
+      texte(manettes.length ? `${manettes[0].nom} détectée : appuie sur un bouton pour prendre une place.` : 'Prends une place libre, ou appuie sur un bouton de ta manette.'));
   }
-  const enfants: Node[] = [titre, detail];
+
+  // Jouer avec : manette, clavier, ou les deux.
+  const choix = el('select', { onchange: () => { reglages = { ...reglages, entree: choix.value as Entree }; enregistrer(reglages); majManette(); } });
+  for (const [v, t] of [['tout', 'Manette et clavier'], ['manette', 'Manette seulement'], ['clavier', 'Clavier seulement']] as const) {
+    choix.append(el('option', { value: v, textContent: t, selected: (reglages.entree ?? 'tout') === v }));
+  }
+  enfants.push(el('label', { className: 'jouer-avec' }, 'Jouer avec ', choix));
+
+  if (reglages.entree !== 'manette') {
+    const k = (s: Parameters<typeof nomTouche>[0]) => el('kbd', { textContent: nomTouche(s) });
+    const c = reglages.clavier;
+    const plan = el('details', { open: reglages.entree === 'clavier' }, el('summary', { textContent: 'Plan du clavier' }),
+      el('p', {}, 'Stick : ', k(c['ly+']), k(c['lx-']), k(c['ly-']), k(c['lx+']), ' · Croix : ', k(c.haut), k(c.gauche), k(c.bas), k(c.droite)),
+      el('p', {}, 'A ', k(c.a), ' · B ', k(c.b), ' · X ', k(c.x), ' · Y ', k(c.y)),
+      el('p', {}, 'L ', k(c.lb), ' · R ', k(c.rb), ' · ZL ', k(c.lt), ' · ZR ', k(c.rt)),
+      el('p', {}, '+ ', k(c.start), ' · − ', k(c.back)));
+    enfants.push(plan);
+  }
   const inconnue = manettes.find((m) => !m.standard && !m.profilPerso);
-  if (inconnue) {
-    const p = document.createElement('p');
-    p.className = 'alerte';
-    p.textContent = `« ${inconnue.nom} » n’est pas reconnue automatiquement : configure ses boutons.`;
-    enfants.push(p);
+  if (inconnue && reglages.entree !== 'clavier') {
+    enfants.push(el('p', { className: 'alerte', textContent: `« ${inconnue.nom} » n’est pas reconnue automatiquement : configure ses boutons.` }));
   }
-  const perso = document.createElement('button');
-  perso.className = 'secondaire';
-  perso.textContent = 'Personnaliser les touches';
-  perso.onclick = () => envoiManette && ouvrirReglages(envoiManette, () => reglages, (r) => { reglages = r; enregistrer(r); majManette(); });
-  enfants.push(perso);
+  enfants.push(bouton('Personnaliser les touches', () => envoiManette && ouvrirReglages(envoiManette, () => reglages, (r) => { reglages = r; enregistrer(r); majManette(); }), true));
   d.replaceChildren(...enfants);
 }
 
 function afficherStats(s: Stats) {
-  const el = $('stats');
-  el.hidden = false;
-  el.classList.toggle('lent', (s.image ?? 0) > 80);
-  el.innerHTML = '';
-  const part = (label: string, valeur: string) => { const b = document.createElement('b'); b.textContent = valeur; el.append(`${label} `, b, '  '); };
+  const e = $('stats');
+  e.hidden = false;
+  e.classList.toggle('lent', (s.image ?? 0) > 80);
+  e.innerHTML = '';
+  const part = (label: string, valeur: string) => e.append(`${label} `, el('b', { textContent: valeur }), '  ');
   part('image', s.image === null ? '…' : `${s.image} ms`);
   part('réseau', s.allerRetour === null ? '…' : `${s.allerRetour} ms`);
   part('', `${s.ips} i/s`);
-  el.title = `Relais : ${s.relais}. « image » = retard entre la capture sur le PC de l’hôte et l’affichage ici.`;
+  e.title = `Relais : ${s.relais}. « image » = retard entre la capture sur le PC de l’hôte et l’affichage ici.`;
 }
 
 function envoyer(m: object) {
@@ -237,11 +290,19 @@ function connecterSalle(essai = 0) {
   ws.onopen = () => { essai = 0; };
   ws.onmessage = (e) => {
     const m = JSON.parse(e.data);
-    if (m.type === 'etat') { etat = m; afficher(); }
+    if (m.type === 'etat') { etat = m; afficher(); majManette(); }
     else if (m.type === 'erreur') toast(m.texte);
   };
   ws.onclose = (e) => {
     if (e.code === 4001) { voile('Session expirée', 'Relance l’Activité.'); return; }
+    if (e.code === 4003) {
+      arreterLecteur();
+      voile('Tu as été retiré de la partie', 'L’hôte t’a retiré. Tu pourras revenir dans quelques minutes.');
+      $('bloc-places').hidden = true;
+      $('participants').replaceChildren();
+      $('actions').replaceChildren();
+      return;
+    }
     voile('Connexion au serveur perdue', 'Reconnexion…');
     setTimeout(() => connecterSalle(essai + 1), Math.min(10_000, 1000 * 2 ** essai));
   };

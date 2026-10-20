@@ -1,24 +1,26 @@
 package main
 
-// Manettes des amis : chaque ami qui envoie des commandes reçoit une manette Xbox 360 virtuelle (ViGEm)
-// sur le PC de l'hôte. J1 est la manette de l'hôte ; les amis prennent J2, J3, J4 dans l'ordre d'arrivée.
-// Les manettes restent branchées toute la session : l'émulateur les distingue par ordre de branchement,
-// un ami qui se reconnecte retrouve donc la même.
+// Manettes virtuelles (ViGEm) des joueurs à distance, une par place J1 à J4.
+// Le serveur dit qui joue sur quelle place ; un spectateur n'a aucun effet sur le jeu.
+// Les manettes de J2, J3 et J4 sont branchées dès le début de la partie, dans cet ordre, et restent
+// branchées : l'émulateur les distingue par ordre de branchement, Player 2/3/4 restent donc stables.
+// J1 est normalement l'hôte sur son PC (sa vraie manette) ; sa manette virtuelle n'est créée que si
+// l'hôte laisse J1 à un ami.
 
 import (
 	"encoding/json"
 	"errors"
+	"log"
 	"sync"
 	"time"
 )
 
 const (
-	maxManettesAmis = 3
-	premierePlace   = 2 // J1 = l'hôte
-	// Limite de débit par ami : 250 messages/s en moyenne, rafales de 50.
+	nbPlaces = 4
+	// Limite de débit par place : 250 messages/s en moyenne, rafales de 50.
 	debitManette  = 250.0
 	rafaleManette = 50.0
-	// Sans nouvelles d'un ami pendant ce temps, sa manette est relâchée (pas de bouton bloqué).
+	// Sans nouvelles d'un joueur pendant ce temps, sa manette est relâchée (pas de bouton bloqué).
 	delaiRelache = time.Second
 	// Boutons XUSB valides (0x0800 n'existe pas).
 	masqueBoutons = 0xF7FF
@@ -26,7 +28,7 @@ const (
 
 var (
 	errPasDeViGEm = errors.New("manettes virtuelles indisponibles sur le PC de l'hôte (pilote ViGEmBus absent)")
-	errComplet    = errors.New("toutes les manettes sont prises")
+	errSpectateur = errors.New("spectateur : pas de place")
 )
 
 type padVirtuel interface {
@@ -43,7 +45,7 @@ type busViGEm struct{ v *ViGEm }
 
 func (b busViGEm) brancher() (padVirtuel, error) { return b.v.PlugX360() }
 
-// messageManette est l'état complet de la manette d'un ami (envoyé à chaque changement et toutes les 100 ms).
+// messageManette est l'état complet de la manette d'un joueur (envoyé à chaque changement et toutes les 100 ms).
 type messageManette struct {
 	S  uint32 `json:"s"` // numéro de séquence
 	B  int    `json:"b"` // boutons, bits XUSB
@@ -82,9 +84,8 @@ func lireManette(b []byte) (XusbReport, uint32, error) {
 	}, m.S, nil
 }
 
-type joueur struct {
-	pad       padVirtuel
-	place     int
+type etatPlace struct {
+	uid       string
 	seq       uint32
 	dernier   time.Time
 	relache   bool
@@ -92,78 +93,119 @@ type joueur struct {
 	majJetons time.Time
 	ignores   int
 	erreurs   int
-	prevenu   bool
 }
 
 type manettes struct {
-	mu      sync.Mutex
-	bus     busManettes // nil si ViGEm absent
-	joueurs map[string]*joueur
-	refus   map[string]bool // amis déjà prévenus qu'ils n'ont pas de manette
-	now     func() time.Time
+	mu     sync.Mutex
+	bus    busManettes // nil si ViGEm absent
+	pads   [nbPlaces + 1]padVirtuel
+	etats  [nbPlaces + 1]etatPlace
+	places map[string]int // uid -> place (joueurs à distance)
+	refus  map[string]bool
+	now    func() time.Time
 }
 
 func nouvellesManettes(bus busManettes) *manettes {
-	return &manettes{bus: bus, joueurs: map[string]*joueur{}, refus: map[string]bool{}, now: time.Now}
+	return &manettes{bus: bus, places: map[string]int{}, refus: map[string]bool{}, now: time.Now}
 }
 
-// appliquer envoie l'état d'un ami à sa manette virtuelle (créée au premier message).
-// nouveau = true quand l'ami vient d'obtenir sa place (pour le prévenir).
-func (m *manettes) appliquer(uid string, r XusbReport, seq uint32) (place int, nouveau bool, err error) {
+// preparer branche les manettes de J2, J3 et J4, dans l'ordre.
+func (m *manettes) preparer() {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	now := m.now()
-	j := m.joueurs[uid]
-	if j == nil {
-		if m.bus == nil {
-			return 0, false, errPasDeViGEm
+	if m.bus == nil {
+		return
+	}
+	for p := 2; p <= nbPlaces; p++ {
+		if err := m.brancherPlace(p); err != nil {
+			log.Printf("manette J%d : %v", p, err)
 		}
-		if len(m.joueurs) >= maxManettesAmis {
-			return 0, false, errComplet
-		}
-		pad, err := m.bus.brancher()
-		if err != nil {
-			return 0, false, err
-		}
-		j = &joueur{pad: pad, place: premierePlace + len(m.joueurs), jetons: rafaleManette, majJetons: now}
-		m.joueurs[uid] = j
-		nouveau = true
 	}
-	// Limite de débit (seau à jetons).
-	j.jetons += now.Sub(j.majJetons).Seconds() * debitManette
-	if j.jetons > rafaleManette {
-		j.jetons = rafaleManette
-	}
-	j.majJetons = now
-	if j.jetons < 1 {
-		j.ignores++
-		return j.place, nouveau, nil
-	}
-	j.jetons--
-	// Messages en retard ignorés ; une séquence qui recommence (page rechargée) est acceptée après une pause.
-	if seq <= j.seq && now.Sub(j.dernier) < 500*time.Millisecond {
-		return j.place, nouveau, nil
-	}
-	j.seq, j.dernier, j.relache = seq, now, false
-	// ViGEm répond parfois « aucune donnée » alors que l'état est bien appliqué (vu en XInput) :
-	// une erreur d'envoi ne retire pas la manette à l'ami.
-	if err := j.pad.Submit(r); err != nil {
-		j.erreurs++
-	}
-	return j.place, nouveau, nil
 }
 
-// place renvoie la place (J2…) de l'ami, ou 0 s'il n'a pas encore de manette.
+func (m *manettes) brancherPlace(p int) error {
+	if m.pads[p] != nil {
+		return nil
+	}
+	pad, err := m.bus.brancher()
+	if err != nil {
+		return err
+	}
+	m.pads[p] = pad
+	return nil
+}
+
+// definirPlaces applique la répartition envoyée par le serveur. Une place qui change de joueur est relâchée.
+func (m *manettes) definirPlaces(nouvelles map[string]int) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	propres := map[string]int{}
+	occupant := [nbPlaces + 1]string{}
+	for uid, p := range nouvelles {
+		if p >= 1 && p <= nbPlaces && occupant[p] == "" {
+			propres[uid] = p
+			occupant[p] = uid
+		}
+	}
+	for p := 1; p <= nbPlaces; p++ {
+		if m.etats[p].uid != occupant[p] {
+			if m.pads[p] != nil {
+				m.pads[p].Submit(XusbReport{})
+			}
+			m.etats[p] = etatPlace{uid: occupant[p], jetons: rafaleManette, majJetons: m.now(), relache: true}
+		}
+	}
+	m.places = propres
+}
+
+// place renvoie la place (1 à 4) d'un joueur à distance, ou 0 pour un spectateur.
 func (m *manettes) place(uid string) int {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if j := m.joueurs[uid]; j != nil {
-		return j.place
-	}
-	return 0
+	return m.places[uid]
 }
 
-// refuser dit si l'ami doit être prévenu d'un refus (une seule fois par ami).
+// appliquer envoie l'état d'un joueur à la manette virtuelle de sa place.
+func (m *manettes) appliquer(uid string, r XusbReport, seq uint32) (int, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	p := m.places[uid]
+	if p == 0 {
+		return 0, errSpectateur
+	}
+	if m.bus == nil {
+		return p, errPasDeViGEm
+	}
+	if err := m.brancherPlace(p); err != nil { // J1 laissé à un ami : branchée à la demande
+		return p, err
+	}
+	e := &m.etats[p]
+	now := m.now()
+	// Limite de débit (seau à jetons).
+	e.jetons += now.Sub(e.majJetons).Seconds() * debitManette
+	if e.jetons > rafaleManette {
+		e.jetons = rafaleManette
+	}
+	e.majJetons = now
+	if e.jetons < 1 {
+		e.ignores++
+		return p, nil
+	}
+	e.jetons--
+	// Messages en retard ignorés ; une séquence qui recommence (page rechargée) est acceptée après une pause.
+	if seq <= e.seq && now.Sub(e.dernier) < 500*time.Millisecond {
+		return p, nil
+	}
+	e.seq, e.dernier, e.relache = seq, now, false
+	// ViGEm répond parfois « aucune donnée » alors que l'état est bien appliqué (vu en XInput) :
+	// une erreur d'envoi ne retire pas la manette au joueur.
+	if err := m.pads[p].Submit(r); err != nil {
+		e.erreurs++
+	}
+	return p, nil
+}
+
+// refuser dit si le joueur doit être prévenu d'un refus (une seule fois par joueur).
 func (m *manettes) refuser(uid string) bool {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -174,25 +216,28 @@ func (m *manettes) refuser(uid string) bool {
 	return true
 }
 
-// relacher remet au repos les manettes des amis silencieux depuis trop longtemps.
+// relacher remet au repos les manettes des joueurs silencieux depuis trop longtemps.
 func (m *manettes) relacher() {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	for _, j := range m.joueurs {
-		if !j.relache && m.now().Sub(j.dernier) > delaiRelache {
-			j.relache = true
-			j.pad.Submit(XusbReport{})
+	for p := 1; p <= nbPlaces; p++ {
+		e := &m.etats[p]
+		if m.pads[p] != nil && !e.relache && m.now().Sub(e.dernier) > delaiRelache {
+			e.relache = true
+			m.pads[p].Submit(XusbReport{})
 		}
 	}
 }
 
-// fermer débranche toutes les manettes (fin de l'hébergement).
+// fermer débranche toutes les manettes (fin de la partie).
 func (m *manettes) fermer() {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	for uid, j := range m.joueurs {
-		j.pad.Submit(XusbReport{})
-		j.pad.Unplug()
-		delete(m.joueurs, uid)
+	for p := 1; p <= nbPlaces; p++ {
+		if m.pads[p] != nil {
+			m.pads[p].Submit(XusbReport{})
+			m.pads[p].Unplug()
+			m.pads[p] = nil
+		}
 	}
 }

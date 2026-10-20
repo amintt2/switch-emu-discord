@@ -190,6 +190,10 @@ func sessionControle(ctx context.Context, cfg Config, exeCapteur string, bus bus
 			case jetons <- o:
 			default:
 			}
+		case "places", "exclure":
+			if courant != nil && courant.salle == o.Salle {
+				courant.transmettre(o)
+			}
 		default:
 			log.Printf("ordre inconnu ignoré : %q", o.Type)
 		}
