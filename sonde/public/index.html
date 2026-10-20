@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sonde Switch EMU</title>
+<style>
+  :root { color-scheme: dark; --bg: #16171d; --card: #20222b; --txt: #e7e8ee; --muted: #9aa0b0; --ok: #3ecf8e; --ko: #ff6b6b; --wait: #f5c451; }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--txt); font: 15px/1.45 system-ui, sans-serif; padding: max(16px, var(--discord-safe-area-inset-top, 0px)) 16px 24px; }
+  h1 { font-size: 20px; margin: 0 0 4px; }
+  #mode { color: var(--muted); margin: 0 0 16px; }
+  section { background: var(--card); border-radius: 10px; padding: 12px 14px; margin-bottom: 10px; border-left: 4px solid var(--wait); }
+  section.ok { border-left-color: var(--ok); }
+  section.ko { border-left-color: var(--ko); }
+  section h2 { font-size: 15px; margin: 0 0 4px; }
+  .res { color: var(--muted); word-break: break-word; }
+  canvas { width: 100%; max-width: 480px; aspect-ratio: 16 / 9; background: #000; border-radius: 8px; display: block; margin-top: 8px; }
+  button { font: inherit; padding: 8px 14px; border-radius: 8px; border: 0; background: #5865f2; color: #fff; margin-top: 8px; }
+  button:disabled { opacity: .5; }
+  p.note { color: var(--muted); font-size: 13px; }
+</style>
+</head>
+<body>
+<h1>Sonde Switch EMU</h1>
+<p id="mode">…</p>
+<section id="t-env" class="wait"><h2>1. Navigateur</h2><div class="res">Analyse…</div></section>
+<section id="t-pad" class="wait"><h2>2. Manette</h2><div class="res">…</div><button id="vibrer">Tester la vibration</button></section>
+<section id="t-key" class="wait"><h2>3. Clavier</h2><div class="res">…</div></section>
+<section id="t-touch" class="wait"><h2>4. Tactile</h2><div class="res">…</div></section>
+<section id="t-ws" class="wait"><h2>5. Serveur seul (Helsinki)</h2><div class="res">Connexion…</div></section>
+<section id="t-vps" class="wait"><h2>6. Jusqu’au PC, via Helsinki</h2><div class="res">En attente…</div></section>
+<section id="t-cf" class="wait"><h2>7. Jusqu’au PC, via Cloudflare</h2><div class="res">En attente…</div></section>
+<section id="t-p2p" class="wait"><h2>8. Jusqu’au PC, en P2P direct</h2><div class="res">En attente…</div><button id="ouvrir">Ouvrir dans le navigateur</button></section>
+<section class="wait"><h2>Image de test</h2><canvas id="video"></canvas><button id="relancer">Relancer les tests réseau</button></section>
+<p class="note">Les résultats sont envoyés automatiquement. Aucune donnée personnelle : seulement le type d’appareil et les mesures.</p>
+<script type="module" src="/sonde.js"></script>
+</body>
+</html>

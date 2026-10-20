@@ -1,0 +1,12 @@
+name = "switch-emu-relais"
+main = "src/index.js"
+compatibility_date = "2026-10-01"
+workers_dev = true
+
+[[durable_objects.bindings]]
+name = "SALLE"
+class_name = "Salle"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["Salle"]
