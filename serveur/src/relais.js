@@ -45,6 +45,7 @@ export class Relais {
     }
     if (s.amis.size >= MAX_AMIS) return ws.close(4002, 'salle pleine');
     const id = s.suivant++;
+    ws.uidRelais = uid;
     s.amis.set(id, ws);
     versHote({ type: 'arrivee', de: id, uid });
     if (!s.hote) ws.send(JSON.stringify({ type: 'pas-d-hote' }));
@@ -76,6 +77,11 @@ export class Relais {
     if (!binaire) {
       let m;
       try { m = JSON.parse(d); } catch { return; }
+      // L'hôte retire quelqu'un : on ferme ses connexions.
+      if (m.type === 'exclure' && typeof m.uid === 'string') {
+        for (const w of s.amis.values()) if (w.uidRelais === m.uid) w.close(4003, 'retiré par l’hôte');
+        return;
+      }
       const a = m.a;
       delete m.a;
       envoyer(a, JSON.stringify(m), { binary: false });

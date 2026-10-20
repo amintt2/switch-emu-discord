@@ -6,6 +6,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"log"
 	"sync"
 	"sync/atomic"
@@ -18,6 +19,16 @@ type hebergement struct {
 	salle  string
 	cancel context.CancelFunc
 	fini   chan struct{}
+	ordres chan ordreServeur // places, exclure : traités dans la boucle de la partie
+}
+
+// transmettre passe un ordre du serveur (places, exclure) à la partie en cours.
+func (h *hebergement) transmettre(o ordreServeur) {
+	select {
+	case h.ordres <- o:
+	default:
+		log.Printf("ordre %q ignoré : file pleine", o.Type)
+	}
 }
 
 // lienRelais est la connexion de l'hôte à un relais.
@@ -38,7 +49,7 @@ type depsHebergement struct {
 
 func demarrerHebergement(parent context.Context, o ordreServeur, cfg Config, d depsHebergement) *hebergement {
 	ctx, cancel := context.WithCancel(parent)
-	h := &hebergement{salle: o.Salle, cancel: cancel, fini: make(chan struct{})}
+	h := &hebergement{salle: o.Salle, cancel: cancel, fini: make(chan struct{}), ordres: make(chan ordreServeur, 16)}
 	go func() {
 		defer close(h.fini)
 		h.tourner(ctx, o, cfg, d)
@@ -62,6 +73,7 @@ func (h *hebergement) tourner(ctx context.Context, o ordreServeur, cfg Config, d
 	defer k.arreter()
 
 	m := nouvellesManettes(d.bus)
+	m.preparer() // J2, J3, J4 branchées dans l'ordre dès le début
 	defer m.fermer()
 	go func() {
 		t := time.NewTicker(250 * time.Millisecond)
@@ -113,6 +125,21 @@ func (h *hebergement) tourner(ctx context.Context, o ordreServeur, cfg Config, d
 			wg.Wait()
 			log.Printf("hébergement de la salle %s : arrêt", o.Salle)
 			return
+		case o := <-h.ordres:
+			switch o.Type {
+			case "places":
+				m.definirPlaces(o.Places)
+				log.Printf("places : %d joueur(s) à distance", len(o.Places))
+			case "exclure":
+				// Le relais coupe la connexion de la personne retirée.
+				b, _ := json.Marshal(map[string]string{"type": "exclure", "uid": o.UID})
+				for _, l := range liens {
+					select {
+					case l.texte <- b:
+					default:
+					}
+				}
+			}
 		case img, ok := <-images:
 			if !ok {
 				d.signalerErr(o.Salle, "le capteur s'est arrêté")
@@ -221,9 +248,6 @@ func (l *lienRelais) session(ctx context.Context, jeton string, k *capteur, man 
 			l.amis.Store(int32(len(amis)))
 			log.Printf("relais %s : un ami regarde (%d en tout)", l.url, len(amis))
 			k.demanderIDR()
-			if p := man.place(msg.UID); p > 0 { // il revient : il retrouve sa manette
-				envoyerTexte(map[string]any{"type": "place", "a": msg.De, "joueur": p})
-			}
 		case "depart":
 			delete(amis, msg.De)
 			l.amis.Store(int32(len(amis)))
@@ -234,16 +258,10 @@ func (l *lienRelais) session(ctx context.Context, jeton string, k *capteur, man 
 			if err != nil {
 				continue
 			}
-			place, nouveau, err := man.appliquer(msg.UID, r, seq)
-			switch {
-			case err != nil:
-				if man.refuser(msg.UID) {
-					log.Printf("manette refusée : %v", err)
-					envoyerTexte(map[string]any{"type": "place", "a": msg.De, "joueur": 0, "raison": err.Error()})
-				}
-			case nouveau:
-				log.Printf("un ami prend la manette J%d", place)
-				envoyerTexte(map[string]any{"type": "place", "a": msg.De, "joueur": place})
+			// Les spectateurs n'ont pas de place : leurs commandes sont ignorées.
+			if _, err := man.appliquer(msg.UID, r, seq); err != nil && !errors.Is(err, errSpectateur) && man.refuser(msg.UID) {
+				log.Printf("manette refusée : %v", err)
+				envoyerTexte(map[string]any{"type": "manette-indisponible", "a": msg.De, "raison": err.Error()})
 			}
 		case "ping":
 			envoyerTexte(map[string]any{"type": "pong", "a": msg.De, "t": msg.T, "s": heureMs(time.Now())})

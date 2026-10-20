@@ -74,3 +74,16 @@ dialog.reglages tr.attente td { color: #f5c451; }
 .onglets, .ligne-boutons { display: flex; gap: 6px; flex-wrap: wrap; margin: 8px 0; }
 .ligne-boutons button { font-size: 13px; padding: 7px 10px; }
 .pied { display: flex; justify-content: flex-end; margin-top: 12px; }
+
+#bloc-places { display: flex; flex-direction: column; gap: 6px; }
+#places { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; }
+#places li { display: flex; align-items: center; gap: 8px; padding: 6px 8px; border-radius: 8px; background: var(--fond); min-height: 38px; }
+#places li.moi { outline: 1px solid var(--accent-2); }
+#places .joueur { font-weight: 800; width: 26px; color: var(--accent-2); }
+#places .nom { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#places .libre { color: var(--discret); }
+#places button, #participants button.retirer { padding: 4px 10px; font-size: 12px; }
+#participants li .badge + button.retirer, #participants li .nom + button.retirer { margin-left: auto; }
+.badge.joue { background: color-mix(in srgb, var(--accent-2) 25%, transparent); color: #b5e6ff; }
+.jouer-avec { display: flex; align-items: center; gap: 6px; font-size: 13px; color: var(--discret); }
+.jouer-avec select { flex: 1; font: inherit; padding: 5px 8px; border-radius: 8px; background: var(--fond); color: var(--texte); border: 1px solid var(--bord); }

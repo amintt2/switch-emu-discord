@@ -79,3 +79,13 @@ test('si l’hôte part, les amis sont prévenus', () => {
   hote.close(1000);
   assert.deepEqual(ami.recus.at(-1), { type: 'hote-parti' });
 });
+
+test('l’hôte peut couper la connexion de quelqu’un qu’il a retiré', () => {
+  const { entrer } = fabrique();
+  const hote = entrer('hote', 'h');
+  const retire = entrer('ami', 'x');
+  const reste = entrer('ami', 'y');
+  hote.texte({ type: 'exclure', uid: 'x' });
+  assert.equal(retire.ferme, 4003);
+  assert.equal(reste.ferme, null);
+});
