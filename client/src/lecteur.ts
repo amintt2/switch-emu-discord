@@ -90,15 +90,25 @@ export class Lecteur {
     });
   }
 
+  /** Réponses de l'hôte sur la manette (place obtenue ou refus). */
+  surPlace: (joueur: number, raison?: string) => void = () => {};
+
+  /** Envoie une commande (manette) à l'hôte, par le relais. */
+  envoyerCommande(m: object) {
+    this.envoyer(m);
+  }
+
   private envoyer(m: object) {
     if (this.ws?.readyState === WebSocket.OPEN) this.ws.send(JSON.stringify(m));
   }
 
   private surTexte(t: string) {
-    let m: { type: string; t?: number; s?: number };
+    let m: { type: string; t?: number; s?: number; joueur?: number; raison?: string };
     try { m = JSON.parse(t); } catch { return; }
     if (m.type === 'pong' && m.t !== undefined && m.s !== undefined) {
       this.horloge.ajouter(m.t, performance.timeOrigin + performance.now(), m.s);
+    } else if (m.type === 'place') {
+      this.surPlace(m.joueur ?? 0, m.raison);
     } else if (m.type === 'hote-parti' || m.type === 'pas-d-hote') {
       this.surEtat('attente-image', 'Le PC de l’hôte n’envoie pas encore d’image…');
     }

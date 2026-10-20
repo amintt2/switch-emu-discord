@@ -2,6 +2,9 @@ import './style.css';
 import { api, getSession, wsUrl, type Utilisateur } from './api.ts';
 import { dansDiscord, seConnecter } from './auth.ts';
 import { Lecteur, type Flux, type Stats } from './lecteur.ts';
+import { EnvoiManette } from './envoi.ts';
+import { ouvrirReglages } from './ecranReglages.ts';
+import { charger, enregistrer, type Reglages } from './reglages.ts';
 
 interface Participant extends Utilisateur { hote: boolean }
 interface EtatSalle {
@@ -17,7 +20,10 @@ let etat: EtatSalle | null = null;
 let lecteur: Lecteur | null = null;
 let attenteJeton: ((f: Flux) => void) | null = null;
 let formulaireOuvert = false;
-let apercu = false;  // l'hôte peut regarder son propre flux
+let apercu = false;  // l'hôte peut regarder son propre flux (et jouer depuis cet appareil)
+let envoiManette: EnvoiManette | null = null;
+let maPlace: { joueur: number; raison?: string } | null = null;
+let reglages: Reglages = charger();
 
 function toast(texte: string) {
   const t = $('toast');
@@ -83,6 +89,8 @@ function afficher() {
     }
   }
 
+  if (lecteur) actions.prepend(blocManette());
+
   // La scène
   if (jeSuisHote && !apercu) voile('Tu héberges la partie', 'Tes amis voient l’écran de ton PC. Joue directement sur ton PC. « Voir l’aperçu » montre ce qu’ils reçoivent.');
   else if (!salle.hote) voile('Personne n’héberge pour l’instant', 'Celui qui a le jeu sur son PC clique « Héberger depuis mon PC ».');
@@ -91,7 +99,7 @@ function afficher() {
   // Le flux
   const regarder = etat.flux && (!jeSuisHote || apercu);
   if (regarder && !lecteur) demarrerLecteur(etat.flux!);
-  else if (!regarder && lecteur) { lecteur.arreter(); lecteur = null; $('stats').hidden = true; }
+  else if (!regarder && lecteur) arreterLecteur();
   if (etat.flux && attenteJeton) { attenteJeton(etat.flux); attenteJeton = null; }
 }
 
@@ -148,7 +156,64 @@ function demarrerLecteur(flux: Flux) {
       setTimeout(() => reject(new Error('pas de jeton')), 8000);
     }),
   );
+  lecteur.surPlace = (joueur, raison) => { maPlace = { joueur, raison }; majManette(); };
+  envoiManette = new EnvoiManette((m) => lecteur?.envoyerCommande(m), () => reglages, () => majManette());
+  envoiManette.demarrer();
   lecteur.demarrer(flux);
+  afficher();
+}
+
+function arreterLecteur() {
+  envoiManette?.arreter();
+  envoiManette = null;
+  maPlace = null;
+  lecteur?.arreter();
+  lecteur = null;
+  $('stats').hidden = true;
+}
+
+/** Encadré « ta manette » : place obtenue, manette détectée, aide pour le clavier. */
+function blocManette() {
+  const d = document.createElement('div');
+  d.id = 'manette';
+  d.className = 'manette';
+  remplirManette(d);
+  return d;
+}
+
+function majManette() {
+  const d = document.getElementById('manette');
+  if (d) remplirManette(d);
+}
+
+function remplirManette(d: HTMLElement) {
+  const manettes = envoiManette?.manettes ?? [];
+  const titre = document.createElement('strong');
+  const detail = document.createElement('p');
+  if (maPlace && maPlace.joueur > 0) {
+    titre.textContent = `Tu joues : J${maPlace.joueur}`;
+    detail.textContent = manettes.length ? `Manette : ${manettes.map((m) => m.nom).join(', ')}` : 'Au clavier (ou branche une manette).';
+  } else if (maPlace?.raison) {
+    titre.textContent = 'Pas de manette pour toi';
+    detail.textContent = maPlace.raison;
+  } else {
+    titre.textContent = 'Pour jouer';
+    detail.textContent = manettes.length ? `${manettes[0].nom} détectée : appuie sur un bouton.` : 'Appuie sur un bouton de ta manette, ou sur une touche du clavier.';
+  }
+  const enfants: Node[] = [titre, detail];
+  const inconnue = manettes.find((m) => !m.standard && !m.profilPerso);
+  if (inconnue) {
+    const p = document.createElement('p');
+    p.className = 'alerte';
+    p.textContent = `« ${inconnue.nom} » n’est pas reconnue automatiquement : configure ses boutons.`;
+    enfants.push(p);
+  }
+  const perso = document.createElement('button');
+  perso.className = 'secondaire';
+  perso.textContent = 'Personnaliser les touches';
+  perso.onclick = () => envoiManette && ouvrirReglages(envoiManette, () => reglages, (r) => { reglages = r; enregistrer(r); majManette(); });
+  enfants.push(perso);
+  d.replaceChildren(...enfants);
 }
 
 function afficherStats(s: Stats) {

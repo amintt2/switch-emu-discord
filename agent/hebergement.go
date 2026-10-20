@@ -33,6 +33,7 @@ type depsHebergement struct {
 	capture     Capture
 	jetonFrais  func(ctx context.Context, salle string) (string, error) // redemande un jeton au serveur
 	signalerErr func(salle, texte string)
+	bus         busManettes // nil si ViGEmBus n'est pas installé
 }
 
 func demarrerHebergement(parent context.Context, o ordreServeur, cfg Config, d depsHebergement) *hebergement {
@@ -60,6 +61,21 @@ func (h *hebergement) tourner(ctx context.Context, o ordreServeur, cfg Config, d
 	}
 	defer k.arreter()
 
+	m := nouvellesManettes(d.bus)
+	defer m.fermer()
+	go func() {
+		t := time.NewTicker(250 * time.Millisecond)
+		defer t.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-t.C:
+				m.relacher()
+			}
+		}
+	}()
+
 	var liens []*lienRelais
 	var wg sync.WaitGroup
 	premierJeton := o.Jeton
@@ -82,7 +98,7 @@ func (h *hebergement) tourner(ctx context.Context, o ordreServeur, cfg Config, d
 		l := &lienRelais{url: u, file: make(chan []byte, 3), texte: make(chan []byte, 64)}
 		liens = append(liens, l)
 		wg.Add(1)
-		go func() { defer wg.Done(); l.maintenir(ctx, jeton, k) }()
+		go func() { defer wg.Done(); l.maintenir(ctx, jeton, k, m) }()
 	}
 	if len(liens) == 0 {
 		d.signalerErr(o.Salle, "aucun relais autorisé")
@@ -123,12 +139,12 @@ func (h *hebergement) tourner(ctx context.Context, o ordreServeur, cfg Config, d
 }
 
 // maintenir garde la connexion au relais ouverte (reconnexion avec un jeton neuf si elle tombe).
-func (l *lienRelais) maintenir(ctx context.Context, jeton func(context.Context) (string, error), k *capteur) {
+func (l *lienRelais) maintenir(ctx context.Context, jeton func(context.Context) (string, error), k *capteur, m *manettes) {
 	attente := time.Second
 	for ctx.Err() == nil {
 		j, err := jeton(ctx)
 		if err == nil {
-			err = l.session(ctx, j, k)
+			err = l.session(ctx, j, k, m)
 		}
 		l.amis.Store(0)
 		if ctx.Err() != nil {
@@ -146,7 +162,7 @@ func (l *lienRelais) maintenir(ctx context.Context, jeton func(context.Context) 
 	}
 }
 
-func (l *lienRelais) session(ctx context.Context, jeton string, k *capteur) error {
+func (l *lienRelais) session(ctx context.Context, jeton string, k *capteur, man *manettes) error {
 	c, _, err := websocket.Dial(ctx, l.url+"?jeton="+jeton, nil)
 	if err != nil {
 		return err
@@ -182,34 +198,55 @@ func (l *lienRelais) session(ctx context.Context, jeton string, k *capteur) erro
 		}
 	}()
 
+	envoyerTexte := func(v map[string]any) {
+		b, _ := json.Marshal(v)
+		select {
+		case l.texte <- b:
+		default:
+		}
+	}
 	amis := map[uint32]bool{}
 	for {
 		_, b, err := c.Read(sctx)
 		if err != nil {
 			return err
 		}
-		m, err := lireMessageAmi(b)
+		msg, err := lireMessageAmi(b)
 		if err != nil {
 			continue
 		}
-		switch m.Type {
+		switch msg.Type {
 		case "arrivee":
-			amis[m.De] = true
+			amis[msg.De] = true
 			l.amis.Store(int32(len(amis)))
 			log.Printf("relais %s : un ami regarde (%d en tout)", l.url, len(amis))
 			k.demanderIDR()
+			if p := man.place(msg.UID); p > 0 { // il revient : il retrouve sa manette
+				envoyerTexte(map[string]any{"type": "place", "a": msg.De, "joueur": p})
+			}
 		case "depart":
-			delete(amis, m.De)
+			delete(amis, msg.De)
 			l.amis.Store(int32(len(amis)))
 		case "idr":
 			k.demanderIDR()
-		case "ping":
-			r, _ := json.Marshal(map[string]any{"type": "pong", "a": m.De, "t": m.T, "s": heureMs(time.Now())})
-			select {
-			case l.texte <- r:
-			default:
+		case "manette":
+			r, seq, err := lireManette(b)
+			if err != nil {
+				continue
 			}
+			place, nouveau, err := man.appliquer(msg.UID, r, seq)
+			switch {
+			case err != nil:
+				if man.refuser(msg.UID) {
+					log.Printf("manette refusée : %v", err)
+					envoyerTexte(map[string]any{"type": "place", "a": msg.De, "joueur": 0, "raison": err.Error()})
+				}
+			case nouveau:
+				log.Printf("un ami prend la manette J%d", place)
+				envoyerTexte(map[string]any{"type": "place", "a": msg.De, "joueur": place})
+			}
+		case "ping":
+			envoyerTexte(map[string]any{"type": "pong", "a": msg.De, "t": msg.T, "s": heureMs(time.Now())})
 		}
-		// Les autres types (manette…) arrivent à l'étape 2.
 	}
 }
