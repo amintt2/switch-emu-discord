@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Lier ce PC — Switch EMU</title>
+<link rel="stylesheet" href="/legal.css">
+<style>
+  .carte { background: #1c1e27; border: 1px solid #2c2f3b; border-radius: 14px; padding: 20px; margin-top: 16px; }
+  .code { font: 700 26px ui-monospace, Consolas, monospace; letter-spacing: 3px; color: #fff; }
+  a.bouton { display: inline-block; margin-top: 14px; background: #5865f2; color: #fff; text-decoration: none; font-weight: 700; padding: 12px 18px; border-radius: 10px; }
+  .ok { color: #3ecf8e; }
+  .ko { color: #ff6b7a; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Lier ce PC à Discord</h1>
+  <div class="carte" id="contenu">…</div>
+  <p class="maj">Switch EMU · <a href="/confidentialite.html">confidentialité</a></p>
+</main>
+<script>
+const p = new URLSearchParams(location.search);
+const c = document.getElementById('contenu');
+const esc = (s) => String(s).replace(/[&<>"']/g, (x) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[x]));
+const ERREURS = { code: 'Code de jumelage invalide.', session: 'La connexion a expiré, recommence depuis l’agent.', discord: 'Discord a refusé la connexion, réessaie.' };
+if (p.get('ok')) {
+  c.innerHTML = `<h2 class="ok">PC lié ✔</h2><p>Ce PC est maintenant lié au compte Discord de <b>${esc(p.get('nom') || '')}</b>.</p>
+    <p>Tu peux fermer cette page. Dans Discord, ouvre l’Activité Switch EMU et clique « Héberger depuis mon PC ».</p>`;
+} else if (p.get('erreur')) {
+  c.innerHTML = `<h2 class="ko">Ça n’a pas marché</h2><p>${esc(ERREURS[p.get('erreur')] || p.get('erreur'))}</p>
+    <p>Dans la fenêtre de l’agent, clique à nouveau « Se connecter avec Discord ».</p>`;
+} else if (/^[A-Z0-9]{4}-[A-Z0-9]{4}$/.test(p.get('code') || '')) {
+  const code = p.get('code');
+  c.innerHTML = `<p>Tu vas lier un PC Windows à ton compte Discord pour pouvoir héberger des parties.</p>
+    <p>Vérifie que ce code est bien celui affiché dans la fenêtre de l’agent, <b>sur ton PC</b> :</p>
+    <p class="code">${esc(code)}</p>
+    <p class="maj">Si tu n’as pas cliqué toi-même « Se connecter avec Discord » dans l’agent, ferme cette page.</p>
+    <a class="bouton" href="/api/oauth/debut?code=${encodeURIComponent(code)}">Se connecter avec Discord</a>`;
+} else {
+  c.innerHTML = '<p>Ouvre cette page depuis l’agent Switch EMU, sur ton PC.</p>';
+}
+</script>
+</body>
+</html>

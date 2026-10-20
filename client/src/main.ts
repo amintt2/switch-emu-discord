@@ -9,8 +9,8 @@ import { charger, enregistrer, type Entree, type Reglages } from './reglages.ts'
 interface Participant extends Utilisateur { hote: boolean; place: number }
 interface Place { uid: string; nom: string; local: boolean; absent: boolean }
 interface EtatSalle {
-  salle: { participants: Participant[]; hote: { uid: string; nom: string; absent: boolean } | null; places: (Place | null)[] };
-  moi: { agent: 'en-ligne' | 'absent' };
+  salle: { participants: Participant[]; hote: { uid: string; nom: string; absent: boolean } | null; places: (Place | null)[]; jeu: string | null };
+  moi: { agent: 'en-ligne' | 'absent'; jeux?: { id: string; titre: string }[] };
   flux: Flux | null;
 }
 
@@ -125,6 +125,7 @@ function afficher() {
   const actions = $('actions');
   actions.replaceChildren();
   if (hote) {
+    actions.append(choixDuJeu(salle.jeu, m.jeux || []));
     actions.append(
       texte('Tu héberges : tes amis voient l’écran de ton PC.'),
       bouton(apercu ? 'Masquer l’aperçu' : 'Voir l’aperçu', () => { apercu = !apercu; afficher(); }, true),
@@ -153,6 +154,21 @@ function afficher() {
   if (etat.flux && attenteJeton) { attenteJeton(etat.flux); attenteJeton = null; }
 }
 
+/** L'hôte choisit un jeu de sa bibliothèque : son agent lance Ryubing en plein écran. */
+function choixDuJeu(enCours: string | null, jeux: { id: string; titre: string }[]) {
+  const d = el('div', { className: 'jeu' }, el('strong', { textContent: enCours ? `En cours : ${enCours}` : 'Jeu' }));
+  if (!jeux.length) {
+    d.append(texte('Aucun jeu dans ta bibliothèque : ajoute ton dossier de jeux dans la fenêtre de l’agent, sur ton PC.'));
+    return d;
+  }
+  const choix = el('select', {});
+  for (const j of jeux) choix.append(el('option', { value: j.id, textContent: j.titre }));
+  d.append(choix, el('div', { className: 'ligne-boutons' },
+    bouton(enCours ? 'Changer de jeu' : 'Lancer', () => envoyer({ type: 'lancer', jeu: choix.value })),
+    ...(enCours ? [bouton('Fermer le jeu', () => envoyer({ type: 'fermer-jeu' }), true)] : [])));
+  return d;
+}
+
 function formulaireCode() {
   const input = el('input', { placeholder: 'ABCD-EFGH', maxLength: 9, autocomplete: 'off' });
   input.setAttribute('aria-label', 'Code affiché par l’agent');
@@ -170,6 +186,11 @@ function formulaireCode() {
   };
   setTimeout(() => input.focus());
   return f;
+}
+
+function afficherJeuEnCours() {
+  const t = etat?.salle.jeu;
+  $('jeu-en-cours').textContent = t ? `· ${t}` : '';
 }
 
 function demarrerLecteur(flux: Flux) {
@@ -290,7 +311,7 @@ function connecterSalle(essai = 0) {
   ws.onopen = () => { essai = 0; };
   ws.onmessage = (e) => {
     const m = JSON.parse(e.data);
-    if (m.type === 'etat') { etat = m; afficher(); majManette(); }
+    if (m.type === 'etat') { etat = m; afficher(); majManette(); afficherJeuEnCours(); }
     else if (m.type === 'erreur') toast(m.texte);
   };
   ws.onclose = (e) => {

@@ -3,7 +3,7 @@ import { config } from './config.js';
 const API = 'https://discord.com/api';
 
 /** Échange le code de discordSdk.commands.authorize() contre un jeton d'accès. */
-export async function exchangeCode(code) {
+export async function exchangeCode(code, redirectUri) {
   const res = await fetch(`${API}/oauth2/token`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
@@ -12,6 +12,7 @@ export async function exchangeCode(code) {
       client_secret: config.discord.clientSecret,
       grant_type: 'authorization_code',
       code,
+      ...(redirectUri ? { redirect_uri: redirectUri } : {}),
     }),
   });
   const body = await res.json().catch(() => ({}));

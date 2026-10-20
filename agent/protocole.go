@@ -64,4 +64,5 @@ type ordreServeur struct {
 	// "places" : uid -> place (1 à 4) des joueurs à distance ; "exclure" : uid de la personne retirée.
 	Places map[string]int `json:"places"`
 	UID    string         `json:"uid"`
+	Jeu    string         `json:"jeu"` // "lancer" : identifiant d'un jeu de la liste de l'agent
 }

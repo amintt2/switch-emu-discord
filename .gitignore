@@ -19,3 +19,5 @@ node_modules/
 sonde/public/sonde.js
 .wrangler/
 dist/
+essai/
+paquet/

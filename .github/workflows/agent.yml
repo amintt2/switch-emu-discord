@@ -1,0 +1,96 @@
+# Compile l'agent Windows (agent Go + capteur C++ + DLL FFmpeg), signe le manifeste et publie la version.
+# Déclenché par une étiquette « agent-vX.Y.Z ». Les agents installés se mettent à jour tout seuls.
+name: Agent Windows
+
+on:
+  push:
+    tags: ['agent-v*']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  construire:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: agent/go.mod
+          cache-dependency-path: agent/go.sum
+
+      - uses: ilammy/msvc-dev-cmd@v1
+
+      - name: FFmpeg (version « shared » de BtbN, empreinte vérifiée)
+        shell: pwsh
+        run: |
+          $nom = 'ffmpeg-n8.1-latest-win64-gpl-shared-8.1'
+          $base = 'https://github.com/BtbN/FFmpeg-Builds/releases/download/latest'
+          Invoke-WebRequest "$base/$nom.zip" -OutFile ff.zip
+          Invoke-WebRequest "$base/checksums.sha256" -OutFile sommes.txt
+          $attendu = ((Select-String -Path sommes.txt -SimpleMatch "$nom.zip").Line -split '\s+')[0]
+          if ((Get-FileHash ff.zip -Algorithm SHA256).Hash -ne $attendu) { throw 'empreinte FFmpeg invalide' }
+          Expand-Archive ff.zip -DestinationPath ffmpeg
+          "FFMPEG_DIR=$PWD\ffmpeg\$nom" >> $env:GITHUB_ENV
+
+      - name: Capteur
+        shell: cmd
+        run: |
+          cmake -S capteur -B capteur\build -G Ninja -DCMAKE_BUILD_TYPE=Release -DFFMPEG_DIR="%FFMPEG_DIR%"
+          cmake --build capteur\build
+
+      - name: Agent (tests puis compilation)
+        shell: pwsh
+        run: |
+          $v = '${{ github.ref_name }}' -replace '^agent-v', ''
+          if ($v -notmatch '^\d+\.\d+\.\d+$') { $v = '0.0.0' }
+          "VERSION=$v" >> $env:GITHUB_ENV
+          Push-Location agent
+          go test ./...
+          if ($LASTEXITCODE) { exit 1 }
+          go build -trimpath -ldflags "-H windowsgui -s -w -X main.version=$v" -o ..\paquet\SwitchEMU.exe .
+          Pop-Location
+
+      - name: Paquet et manifeste
+        shell: pwsh
+        run: |
+          Copy-Item capteur\build\capteur.exe paquet\
+          foreach ($d in 'avcodec-62', 'avutil-60', 'swresample-6') { Copy-Item "capteur\build\$d.dll" paquet\ }
+          Copy-Item LICENSE paquet\LICENSE.txt
+          Compress-Archive -Path paquet\* -DestinationPath SwitchEMU-agent.zip
+          $h = (Get-FileHash SwitchEMU-agent.zip -Algorithm SHA256).Hash.ToLower()
+          $t = (Get-Item SwitchEMU-agent.zip).Length
+          $m = '{"version":"' + $env:VERSION + '","fichier":"SwitchEMU-agent.zip","sha256":"' + $h + '","taille":' + $t + '}'
+          [IO.File]::WriteAllText("$PWD\manifest.json", $m)
+
+      - name: Signature
+        shell: pwsh
+        env:
+          AGENT_SIGNING_KEY: ${{ secrets.AGENT_SIGNING_KEY }}
+        run: |
+          Push-Location outils
+          $sig = go run ./signer ..\manifest.json
+          if ($LASTEXITCODE) { exit 1 }
+          Pop-Location
+          [IO.File]::WriteAllText("$PWD\manifest.sig", $sig)
+
+      - name: Publication
+        if: startsWith(github.ref, 'refs/tags/agent-v')
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create '${{ github.ref_name }}' SwitchEMU-agent.zip manifest.json manifest.sig `
+            --title "Agent $env:VERSION" `
+            --notes "Agent Windows de Switch EMU. Télécharge SwitchEMU-agent.zip, décompresse-le et lance SwitchEMU.exe : il s'installe tout seul, puis se met à jour automatiquement."
+
+      - uses: actions/upload-artifact@v4
+        if: ${{ !startsWith(github.ref, 'refs/tags/agent-v') }}
+        with:
+          name: SwitchEMU-agent
+          path: |
+            SwitchEMU-agent.zip
+            manifest.json
+            manifest.sig

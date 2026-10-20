@@ -19,6 +19,9 @@ type Config struct {
 	// compromis qui voudrait envoyer l'image ailleurs.
 	RelaisAutorises []string `json:"relaisAutorises"`
 	Capture         Capture  `json:"capture"`
+	// Ryubing (Ryujinx.exe) et les dossiers où sont rangés les jeux de l'hôte.
+	Ryujinx      string   `json:"ryujinx,omitempty"`
+	DossiersJeux []string `json:"dossiersJeux,omitempty"`
 
 	dev bool // -dev : accepte un serveur et un relais en ws://localhost
 }

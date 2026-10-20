@@ -8,7 +8,7 @@ import { assertConfig, config, listeRelais, salleDepuisInstance } from './config
 import { signer, verifier } from './jetons.js';
 import { exchangeCode, fetchUser } from './discord.js';
 import { Salles } from './salles.js';
-import { Agents } from './agents.js';
+import { Agents, normaliserCode } from './agents.js';
 import { Relais } from './relais.js';
 
 const SESSION_MS = 24 * 3600_000;
@@ -37,9 +37,12 @@ const jetonRelais = (salle, role, uid) => signer(config.relaySecret, { salle, ro
 /** Envoie à chaque joueur de la salle ce qu'il doit voir (avec son propre jeton pour regarder). */
 function diffuser(salleId) {
   const vue = salles.vue(salleId);
+  const hoteUid = vue.hote?.uid;
+  vue.jeu = hoteUid ? agents.jeuEnCours(hoteUid)?.titre || null : null;
   for (const j of joueurs.get(salleId) || []) {
     if (j.ws.readyState !== 1) continue;
     const moi = { agent: agents.enLigne(j.uid) ? 'en-ligne' : 'absent' };
+    if (j.uid === hoteUid) moi.jeux = agents.jeuxDe(hoteUid);  // la liste de jeux ne va qu'à l'hôte
     // L'hôte reçoit aussi un accès : il peut afficher l'aperçu de ce que voient ses amis.
     const flux = vue.hote && !vue.hote.absent
       ? { relais: listeRelais().map((r) => ({ nom: r.nom, discord: r.discord, web: r.web })), jeton: jetonRelais(salleId, 'ami', j.uid) }
@@ -114,6 +117,32 @@ app.get('/api/agent/jumelage/:secret', async (request, reply) => {
   return r;
 });
 
+// Jumelage par le navigateur : l'agent ouvre /lier.html?code=…, la personne se connecte avec Discord,
+// et le code est confirmé pour son compte (plus besoin de le recopier).
+const redirectionOAuth = `${config.publicUrl}/api/oauth/rappel`;
+app.get('/api/oauth/debut', async (request, reply) => {
+  const code = normaliserCode(request.query.code);
+  if (!code || !config.discord.clientId) return reply.redirect('/lier.html?erreur=code');
+  const state = signer(config.sessionSecret, { lier: code }, 10 * 60_000);
+  const url = new URL('https://discord.com/oauth2/authorize');
+  url.search = new URLSearchParams({ client_id: config.discord.clientId, response_type: 'code', redirect_uri: redirectionOAuth, scope: 'identify', state, prompt: 'none' });
+  return reply.redirect(url.toString());
+});
+
+app.get('/api/oauth/rappel', async (request, reply) => {
+  const etat = verifier(config.sessionSecret, request.query.state);
+  if (!etat?.lier || typeof request.query.code !== 'string') return reply.redirect('/lier.html?erreur=session');
+  try {
+    const user = await fetchUser(await exchangeCode(request.query.code, redirectionOAuth));
+    const r = agents.confirmer(etat.lier, user);
+    if (r.erreur) return reply.redirect(`/lier.html?erreur=${encodeURIComponent(r.erreur)}`);
+    return reply.redirect(`/lier.html?ok=1&nom=${encodeURIComponent(user.nom)}`);
+  } catch (e) {
+    request.log.warn(e, 'connexion Discord (navigateur) refusée');
+    return reply.redirect('/lier.html?erreur=discord');
+  }
+});
+
 app.post('/api/jumelage', async (request, reply) => {
   const s = session((request.headers.authorization || '').replace(/^Bearer\s+/i, ''));
   if (!s) return reply.code(401).send({ error: 'Session invalide ou expirée' });
@@ -159,6 +188,12 @@ app.register(async (scope) => {
         agents.envoyer(s.uid, { type: 'exclure', salle: s.salle, uid: m.uid });
         diffuser(s.salle);
         envoyerPlaces(s.salle);
+      } else if (m?.type === 'lancer' || m?.type === 'fermer-jeu') {
+        // Seul l'hôte choisit le jeu, et seulement dans la liste envoyée par son agent.
+        if (salles.get(s.salle)?.hote !== s.uid) return ws.send(JSON.stringify({ type: 'erreur', texte: 'Seul l’hôte choisit le jeu.' }));
+        if (m.type === 'fermer-jeu') return agents.envoyer(s.uid, { type: 'fermer-jeu' });
+        if (typeof m.jeu !== 'string' || !agents.aLeJeu(s.uid, m.jeu)) return ws.send(JSON.stringify({ type: 'erreur', texte: 'Jeu inconnu.' }));
+        agents.envoyer(s.uid, { type: 'lancer', salle: s.salle, jeu: m.jeu });
       } else if (m?.type === 'jeton') {
         diffuser(s.salle);  // renvoie un état avec un jeton neuf (pour se reconnecter au relais)
       }
@@ -184,6 +219,12 @@ app.register(async (scope) => {
       let m;
       try { m = JSON.parse(raw); } catch { return; }
       // L'agent redemande un jeton pour se reconnecter au relais, seulement s'il héberge encore.
+      if (m?.type === 'jeux' || m?.type === 'jeu-en-cours') {
+        if (m.type === 'jeux') agents.definirJeux(a.uid, m.jeux);
+        else agents.definirJeuEnCours(a.uid, typeof m.jeu === 'string' ? m.jeu : '');
+        for (const s of salles.salles.values()) if (s.hote === a.uid) diffuser(s.id);
+        return;
+      }
       if (m?.type === 'jeton' && salles.get(m.salle)?.hote === a.uid) {
         ws.send(JSON.stringify({ type: 'jeton', salle: m.salle, jeton: jetonRelais(m.salle, 'hote', a.uid) }));
         envoyerPlaces(m.salle);

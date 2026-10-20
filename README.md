@@ -6,6 +6,24 @@ et jouent avec leur manette, le clavier ou des boutons tactiles.
 
 > Rien de protégé n'est dans ce dépôt : ni jeux, ni clés, ni firmware. Chacun utilise ses propres dumps.
 
+## Héberger une partie (sur ton PC Windows)
+
+1. Télécharge **SwitchEMU-agent.zip** sur la page [Releases](https://github.com/amintt2/switch-emu-discord/releases/latest),
+   décompresse-le et lance **SwitchEMU.exe**. Il s'installe tout seul (dans `%LOCALAPPDATA%\SwitchEMU`),
+   démarre avec Windows, se range près de l'horloge et se met à jour automatiquement (versions signées).
+2. Dans sa fenêtre :
+   - **Se connecter avec Discord** : lie ce PC à ton compte (une seule fois) ;
+   - **Émulateur** : Ryubing (`Ryujinx.exe`) est détecté tout seul, sinon indique où il se trouve ;
+   - **Mes jeux** : ajoute le dossier où tu ranges tes jeux (`.nsp`, `.xci`) — tes propres dumps.
+3. Pour les manettes de tes amis, installe [ViGEmBus](https://github.com/nefarius/ViGEmBus/releases/latest) (une fois).
+4. Dans Discord, lance l'Activité **Switch EMU** dans un salon vocal, clique **Héberger depuis mon PC**,
+   choisis le jeu : l'agent lance Ryubing en plein écran.
+5. Dans Ryubing (une fois) : **Input → Player 2, 3, 4** = les manettes « Xbox 360 Controller » (branchées par
+   l'agent dans cet ordre au début de la partie). Player 1 = ta manette.
+
+Tes amis n'installent rien : ils lancent l'Activité, prennent une place (J2 à J4) et jouent avec leur manette,
+leur clavier, et bientôt des boutons tactiles.
+
 ## État actuel : vérifications avant le vrai code
 
 | Dossier | Ce que c'est |
