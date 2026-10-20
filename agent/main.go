@@ -52,11 +52,19 @@ func main() {
 
 	fmt.Printf("Switch EMU — agent %s\n", version)
 	if cfg.Jeton == "" {
-		jeton, nom, err := jumeler(ctx, cfg.Serveur, func(code string) {
-			fmt.Printf("\n  Code de jumelage :  %s\n\n", code)
-			fmt.Println("  Dans Discord, ouvre l'Activité Switch EMU, clique « Lier mon PC » et tape ce code.")
-			fmt.Println("  (il est valable 10 minutes)")
-		})
+		var jeton, nom string
+		for {
+			jeton, nom, err = jumeler(ctx, cfg.Serveur, func(code string) {
+				fmt.Printf("\n  Code de jumelage :  %s\n\n", code)
+				fmt.Println("  Dans Discord, ouvre l'Activité Switch EMU, clique « Lier mon PC » et tape ce code.")
+				fmt.Println("  (il est valable 10 minutes ; un nouveau code s'affichera ensuite)")
+			})
+			if err == nil || ctx.Err() != nil {
+				break
+			}
+			log.Printf("%v — nouveau code dans 5 s", err)
+			time.Sleep(5 * time.Second)
+		}
 		if err != nil {
 			log.Fatal(err)
 		}

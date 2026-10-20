@@ -66,5 +66,5 @@ func jumeler(ctx context.Context, serveur string, afficher func(code string)) (j
 			return e.Jeton, e.Nom, nil
 		}
 	}
-	return "", "", errors.New("code expiré sans être utilisé : relance l'agent pour en avoir un nouveau")
+	return "", "", errors.New("code expiré sans être utilisé")
 }
