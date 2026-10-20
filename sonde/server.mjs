@@ -61,7 +61,59 @@ const server = createServer(async (req, res) => {
   } catch { res.writeHead(404); res.end('introuvable'); }
 });
 
-const wss = new WebSocketServer({ server, path: '/ws', maxPayload: 4096 });
+const wss = new WebSocketServer({ noServer: true, maxPayload: 4096 });
+const relais = new WebSocketServer({ noServer: true, maxPayload: 1 << 20 });
+server.on('upgrade', (req, socket, head) => {
+  let url;
+  try { url = new URL(req.url, 'http://x'); } catch { return socket.destroy(); }
+  if (url.pathname === '/ws') wss.handleUpgrade(req, socket, head, (ws) => wss.emit('connection', ws, req));
+  else if (url.pathname === '/relais') relais.handleUpgrade(req, socket, head, (ws) => relais.emit('connection', ws, req, url));
+  else socket.destroy();
+});
+
+// Relais de test, même protocole que relais-cf/src/index.js :
+//   ami -> hôte : texte JSON + "de" ; hôte -> ami : texte JSON avec "a" (ou à tous), binaire [u32 id][charge]
+const salles = new Map();
+relais.on('connection', (ws, req, url) => {
+  const nom = url.searchParams.get('salle') || '';
+  if (!/^[a-z0-9-]{1,64}$/.test(nom)) return ws.close(4001, 'salle invalide');
+  const s = salles.get(nom) || { hote: null, amis: new Map(), suivant: 1 };
+  salles.set(nom, s);
+  const versHote = (m) => { if (s.hote?.readyState === 1) s.hote.send(JSON.stringify(m)); };
+  if (url.searchParams.get('role') === 'hote') {
+    s.hote?.close(4000, 'remplacé par un autre hôte');
+    s.hote = ws;
+    ws.on('message', (d, isBinary) => {
+      if (!isBinary) {
+        let m;
+        try { m = JSON.parse(d); } catch { return; }
+        const a = m.a;
+        delete m.a;
+        const t = JSON.stringify(m);
+        for (const [id, w] of s.amis) if (!a || a === id) w.send(t);
+      } else if (d.length > 4) {
+        const a = d.readUInt32LE(0), charge = d.subarray(4);
+        for (const [id, w] of s.amis) if (!a || a === id) w.send(charge);
+      }
+    });
+    ws.on('close', () => { if (s.hote === ws) s.hote = null; });
+  } else {
+    if (s.amis.size >= 16) return ws.close(4002, 'salle pleine');
+    const id = s.suivant++;
+    s.amis.set(id, ws);
+    versHote({ type: 'arrivee', de: id });
+    if (!s.hote) ws.send(JSON.stringify({ type: 'pas-d-hote' }));
+    ws.on('message', (d, isBinary) => {
+      if (isBinary || d.length > 65536) return;
+      let m;
+      try { m = JSON.parse(d); } catch { return; }
+      m.de = id;
+      versHote(m);
+    });
+    ws.on('close', () => { s.amis.delete(id); versHote({ type: 'depart', de: id }); });
+  }
+});
+
 wss.on('connection', (ws, req) => {
   const ip = ipOf(req);
   let streaming = false;
