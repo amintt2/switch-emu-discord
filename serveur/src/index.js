@@ -1,3 +1,4 @@
+import { randomBytes } from 'node:crypto';
 import { existsSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import Fastify from 'fastify';
@@ -13,6 +14,10 @@ import { Relais } from './relais.js';
 
 const SESSION_MS = 24 * 3600_000;
 const JETON_RELAIS_MS = 5 * 60_000;
+const JETON_RELAIS_HOTE_MS = 2 * 3600_000;  // l'agent le réutilise si le serveur ne répond plus
+const DELAI_AGENT_MS = 45_000;    // l'agent a ce temps pour revenir avant que la partie s'arrête
+const DELAI_REPRISE_MS = 60_000;  // après un redémarrage du serveur : l'hôte a ce temps pour revenir dans sa salle
+const BATTEMENT_MS = 15_000;
 
 const app = Fastify({
   logger: { level: process.env.LOG_LEVEL || 'info' },
@@ -30,9 +35,17 @@ const joueurs = new Map();
 
 const session = (token) => {
   const s = verifier(config.sessionSecret, token);
-  return s && typeof s.uid === 'string' && typeof s.salle === 'string' ? s : null;
+  return s && !s.passage && typeof s.uid === 'string' && typeof s.salle === 'string' ? s : null;
 };
-const jetonRelais = (salle, role, uid) => signer(config.relaySecret, { salle, role, uid }, JETON_RELAIS_MS);
+/** Jetons de passage déjà utilisés (id -> expiration) : chacun ne sert qu'une fois. */
+const passagesUtilises = new Map();
+const jetonRelais = (salle, role, uid) => signer(config.relaySecret, { salle, role, uid }, role === 'hote' ? JETON_RELAIS_HOTE_MS : JETON_RELAIS_MS);
+/** Identifiant court pour les journaux (les identifiants de salle sont déjà des empreintes). */
+const court = (salle) => String(salle).slice(0, 9);
+/** uid -> minuteur : l'agent s'est déconnecté, la partie s'arrête s'il ne revient pas à temps. */
+const departsAgent = new Map();
+/** uid -> { salle, jusqua } : l'agent dit héberger une salle que le serveur ne connaît plus (redémarrage). */
+const reprises = new Map();
 
 /** Envoie à chaque joueur de la salle ce qu'il doit voir (avec son propre jeton pour regarder). */
 function diffuser(salleId) {
@@ -44,7 +57,8 @@ function diffuser(salleId) {
     const moi = { agent: agents.enLigne(j.uid) ? 'en-ligne' : 'absent' };
     if (j.uid === hoteUid) moi.jeux = agents.jeuxDe(hoteUid);  // la liste de jeux ne va qu'à l'hôte
     // L'hôte reçoit aussi un accès : il peut afficher l'aperçu de ce que voient ses amis.
-    const flux = vue.hote && !vue.hote.absent
+    // Le flux continue pendant une absence de l'hôte (son onglet se reconnecte) : c'est son PC qui l'envoie.
+    const flux = vue.hote
       ? { relais: listeRelais().map((r) => ({ nom: r.nom, discord: r.discord, web: r.web })), jeton: jetonRelais(salleId, 'ami', j.uid) }
       : null;
     j.ws.send(JSON.stringify({ type: 'etat', salle: vue, moi, flux }));
@@ -68,9 +82,52 @@ function commanderAgent(uid, salleId, heberger) {
   } else agents.envoyer(uid, { type: 'arreter', salle: salleId });
 }
 
+/** Un agent revenu après un redémarrage du serveur reprend sa salle dès que son propriétaire y est. */
+function reprendre(uid, salleId) {
+  const s = salles.get(salleId);
+  if (s?.hote === uid) return true;
+  if (!s?.participants.has(uid) || s.hote) return false;
+  if (salles.heberger(salleId, uid).erreur) return false;
+  app.log.info({ uid, salle: court(salleId) }, 'hébergement repris');
+  diffuser(salleId);
+  envoyerPlaces(salleId);
+  return true;
+}
+
 setInterval(() => {
   for (const id of salles.tick()) { diffuser(id); envoyerPlaces(id); }
+  for (const [uid, r] of reprises) {
+    if (reprendre(uid, r.salle)) reprises.delete(uid);
+    else if (Date.now() > r.jusqua) { reprises.delete(uid); commanderAgent(uid, r.salle, false); }
+  }
 }, 2000).unref();
+
+// Battements : une connexion qui ne répond plus est fermée (et l'autre côté se reconnecte).
+// Les pings applicatifs des pages gardent aussi la connexion active à travers le proxy de Discord.
+setInterval(() => {
+  for (const ws of app.websocketServer?.clients ?? []) {
+    if (ws.vivant === false) { ws.terminate(); continue; }
+    ws.vivant = false;
+    try { ws.ping(); } catch { /* déjà fermée */ }
+  }
+}, BATTEMENT_MS).unref();
+const suivreVie = (ws) => {
+  ws.vivant = true;
+  ws.on('pong', () => { ws.vivant = true; });
+  ws.on('message', () => { ws.vivant = true; });
+};
+
+/** Les pages envoient des mesures et des erreurs : on les écrit dans le journal (texte court, nombres). */
+function nettoyerDiag(m) {
+  const r = {};
+  for (const [k, v] of Object.entries(m || {}).slice(0, 24)) {
+    if (!/^[a-zA-Z]{1,20}$/.test(k) || k === 'type') continue;
+    if (typeof v === 'number' && Number.isFinite(v)) r[k] = Math.round(v * 10) / 10;
+    else if (typeof v === 'boolean') r[k] = v;
+    else if (typeof v === 'string') r[k] = v.slice(0, 160);
+  }
+  return r;
+}
 
 // ------------------------------------------------------------------ connexion des joueurs
 
@@ -89,6 +146,28 @@ app.post('/api/token', async (request, reply) => {
   // Une salle par instance d'Activité : tous ceux qui ont rejoint la même Activité.
   const s = signer(config.sessionSecret, { ...user, salle: salleDepuisInstance(instanceId) }, SESSION_MS);
   return { access_token: accessToken, session: s, user };
+});
+
+// « Ouvrir dans le navigateur » : l'Activité demande un jeton de passage (2 min, une seule fois),
+// le navigateur l'échange contre une session dans la même salle, sans se reconnecter à Discord.
+const PASSAGE_MS = 2 * 60_000;
+app.post('/api/passage', async (request, reply) => {
+  const s = session((request.headers.authorization || '').replace(/^Bearer\s+/i, ''));
+  if (!s) return reply.code(401).send({ error: 'Session invalide ou expirée' });
+  const { uid, nom, avatar, salle } = s;
+  const p = signer(config.sessionSecret, { passage: true, id: randomBytes(12).toString('base64url'), uid, nom, avatar, salle }, PASSAGE_MS);
+  return { url: `${config.publicUrl}/?passage=${encodeURIComponent(p)}` };
+});
+
+app.post('/api/passage/echange', async (request, reply) => {
+  const p = verifier(config.sessionSecret, request.body?.passage);
+  if (!p?.passage || typeof p.id !== 'string' || passagesUtilises.has(p.id)) {
+    return reply.code(400).send({ error: 'Lien expiré : rouvre-le depuis l’Activité dans Discord.' });
+  }
+  for (const [id, fin] of passagesUtilises) if (fin < Date.now()) passagesUtilises.delete(id);
+  passagesUtilises.set(p.id, p.exp);
+  const user = { uid: p.uid, nom: p.nom, avatar: p.avatar };
+  return { session: signer(config.sessionSecret, { ...user, salle: p.salle }, SESSION_MS), user };
 });
 
 app.post('/api/dev-session', async (request, reply) => {
@@ -160,14 +239,27 @@ app.register(async (scope) => {
     if (!s) return ws.close(4001, 'session invalide');
     const moi = { ws, uid: s.uid };
     if (salles.rejoindre(s.salle, s).exclu) return ws.close(4003, 'retiré par l’hôte');
+    suivreVie(ws);
+    const debut = Date.now();
+    const log = app.log.child({ uid: s.uid, salle: court(s.salle) });
+    log.info({ ua: String(request.headers['user-agent'] || '').slice(0, 160) }, 'joueur connecté');
     if (!joueurs.has(s.salle)) joueurs.set(s.salle, new Set());
     joueurs.get(s.salle).add(moi);
+    const r = reprises.get(s.uid);
+    if (r?.salle === s.salle && reprendre(s.uid, s.salle)) reprises.delete(s.uid);
     diffuser(s.salle);
+    let diags = 0;
+    const limiteDiag = setInterval(() => { diags = 0; }, 60_000);
 
     ws.on('message', (raw) => {
       let m;
       try { m = JSON.parse(raw); } catch { return; }
-      if (m?.type === 'heberger') {
+      if (m?.type === 'ping') {
+        return ws.send(JSON.stringify({ type: 'pong', t: Number(m.t) || 0 }));
+      } else if (m?.type === 'diag') {
+        if (++diags <= 12) log.info({ diag: nettoyerDiag(m) }, `diag ${typeof m.quoi === 'string' ? m.quoi.slice(0, 30) : ''}`);
+        return;
+      } else if (m?.type === 'heberger') {
         const r = salles.heberger(s.salle, s.uid);
         if (r.erreur) return ws.send(JSON.stringify({ type: 'erreur', texte: r.erreur }));
         commanderAgent(s.uid, s.salle, true);
@@ -198,7 +290,9 @@ app.register(async (scope) => {
         diffuser(s.salle);  // renvoie un état avec un jeton neuf (pour se reconnecter au relais)
       }
     });
-    ws.on('close', () => {
+    ws.on('close', (code) => {
+      clearInterval(limiteDiag);
+      log.info({ code, duree: Math.round((Date.now() - debut) / 1000) }, 'joueur déconnecté');
       joueurs.get(s.salle)?.delete(moi);
       if (!joueurs.get(s.salle)?.size) joueurs.delete(s.salle);
       if (salles.quitter(s.salle, s.uid)) { diffuser(s.salle); envoyerPlaces(s.salle); }
@@ -211,13 +305,26 @@ app.register(async (scope) => {
     if (!a) return ws.close(4001, 'agent non jumelé');
     const ancienne = agents.connecter(a.uid, ws);
     ancienne?.close(4000, 'un autre agent s’est connecté avec ce compte');
+    suivreVie(ws);
+    clearTimeout(departsAgent.get(a.uid));
+    departsAgent.delete(a.uid);
+    const debut = Date.now();
     ws.send(JSON.stringify({ type: 'bienvenue', nom: a.nom }));
-    app.log.info({ uid: a.uid }, 'agent connecté');
+    app.log.info({ uid: a.uid, version: String(request.headers['x-agent-version'] || '?').slice(0, 20) }, 'agent connecté');
     for (const id of joueurs.keys()) diffuser(id);  // « Héberger » devient possible
 
     ws.on('message', (raw) => {
       let m;
       try { m = JSON.parse(raw); } catch { return; }
+      // Après une reconnexion, l'agent dit quelle salle il héberge encore.
+      if (m?.type === 'heberge' && typeof m.salle === 'string' && m.salle.length <= 64) {
+        if (!reprendre(a.uid, m.salle)) reprises.set(a.uid, { salle: m.salle, jusqua: Date.now() + DELAI_REPRISE_MS });
+        return;
+      }
+      if (m?.type === 'diag') {
+        app.log.info({ uid: a.uid, diag: nettoyerDiag(m) }, `agent : ${typeof m.quoi === 'string' ? m.quoi.slice(0, 30) : 'diag'}`);
+        return;
+      }
       // L'agent redemande un jeton pour se reconnecter au relais, seulement s'il héberge encore.
       if (m?.type === 'jeux' || m?.type === 'jeu-en-cours') {
         if (m.type === 'jeux') agents.definirJeux(a.uid, m.jeux);
@@ -235,11 +342,18 @@ app.register(async (scope) => {
         }
       }
     });
-    ws.on('close', () => {
+    ws.on('close', (code) => {
       if (!agents.deconnecter(a.uid, ws)) return;
-      app.log.info({ uid: a.uid }, 'agent déconnecté');
-      salles.agentParti(a.uid);
+      app.log.info({ uid: a.uid, code, duree: Math.round((Date.now() - debut) / 1000) }, 'agent déconnecté');
       for (const id of joueurs.keys()) diffuser(id);
+      // La vidéo passe par les relais, pas par cette connexion : on laisse à l'agent le temps de revenir.
+      clearTimeout(departsAgent.get(a.uid));
+      departsAgent.set(a.uid, setTimeout(() => {
+        departsAgent.delete(a.uid);
+        if (agents.enLigne(a.uid)) return;
+        app.log.info({ uid: a.uid }, 'agent parti pour de bon : la partie s’arrête');
+        for (const id of salles.agentParti(a.uid)) diffuser(id);
+      }, DELAI_AGENT_MS));
     });
   });
 
@@ -247,6 +361,9 @@ app.register(async (scope) => {
   scope.get('/relais', { websocket: true }, (ws, request) => {
     const droit = relais.autoriser(request.query.jeton);
     if (!droit) return ws.close(4001, 'jeton invalide');
+    suivreVie(ws);
+    const debut = Date.now();
+    ws.on('close', (code) => app.log.info({ uid: droit.uid, role: droit.role, salle: court(droit.salle), code, duree: Math.round((Date.now() - debut) / 1000) }, 'relais VPS : départ'));
     relais.brancher(ws, droit);
   });
 });

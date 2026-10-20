@@ -37,10 +37,19 @@ type Agent struct {
 	envoyer  func(any) // canal de contrôle courant (nil si déconnecté)
 	relancer chan struct{}
 	quitter  func()
+
+	// La partie hébergée vit en dehors de la connexion au serveur : la vidéo passe par les relais,
+	// une coupure avec le serveur ne l'arrête pas.
+	courant   *hebergement
+	jetons    chan ordreServeur // réponses du serveur aux demandes de jeton de relais
+	horsLigne time.Time         // depuis quand le serveur est injoignable (zéro si connecté)
 }
 
+// sansServeurMax : sans nouvelles du serveur depuis ce temps, la partie s'arrête.
+const sansServeurMax = 10 * time.Minute
+
 func nouvelAgent(chemin string, cfg Config, exeCapteur string, bus busManettes) *Agent {
-	a := &Agent{chemin: chemin, cfg: cfg, exeCapteur: exeCapteur, bus: bus, relancer: make(chan struct{}, 1)}
+	a := &Agent{chemin: chemin, cfg: cfg, exeCapteur: exeCapteur, bus: bus, relancer: make(chan struct{}, 1), jetons: make(chan ordreServeur, 4)}
 	if a.cfg.Ryujinx == "" {
 		a.cfg.Ryujinx = detecterRyujinx()
 	}
@@ -68,6 +77,7 @@ func (a *Agent) modifier(f func(*Config)) error {
 		a.rescannerJeux()
 	}
 	if avant.Jeton != cfg.Jeton || avant.Serveur != cfg.Serveur {
+		a.arreterHebergement("")
 		a.signalerRelance()
 	}
 	return nil
@@ -184,6 +194,8 @@ func (a *Agent) fermerJeu() {
 
 // boucle garde la connexion ouverte tant qu'un compte est lié ; elle repart à chaque changement de compte.
 func (a *Agent) boucle(ctx context.Context) {
+	defer a.arreterHebergement("")
+	go a.surveillerHorsLigne(ctx)
 	attente := time.Second
 	for ctx.Err() == nil {
 		cfg := a.config()
@@ -203,14 +215,21 @@ func (a *Agent) boucle(ctx context.Context) {
 			case <-sctx.Done():
 			}
 		}()
-		err := a.session(sctx, cfg)
+		debut := time.Now()
+		err := a.session(sctx, ctx, cfg)
 		stop()
 		a.mu.Lock()
 		a.connecte, a.envoyer = false, nil
+		if a.horsLigne.IsZero() {
+			a.horsLigne = time.Now()
+		}
 		if err != nil {
 			a.derniere = err.Error()
 		}
 		a.mu.Unlock()
+		if time.Since(debut) > 30*time.Second {
+			attente = time.Second // la connexion avait tenu : on revient vite
+		}
 		if ctx.Err() != nil {
 			return
 		}
@@ -223,24 +242,113 @@ func (a *Agent) boucle(ctx context.Context) {
 			attente = time.Second // relance volontaire (compte changé)
 			continue
 		}
-		log.Printf("serveur injoignable (%v), nouvel essai dans %s", err, attente)
+		log.Printf("connexion au serveur perdue (%v), nouvel essai dans %s", err, attente)
 		select {
 		case <-ctx.Done():
 			return
 		case <-time.After(attente):
 		}
-		if attente < 30*time.Second {
+		if attente < 15*time.Second {
 			attente *= 2
 		}
 	}
 }
 
+// surveillerHorsLigne arrête la partie si le serveur reste injoignable trop longtemps.
+func (a *Agent) surveillerHorsLigne(ctx context.Context) {
+	t := time.NewTicker(10 * time.Second)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			a.mu.Lock()
+			trop := !a.horsLigne.IsZero() && time.Since(a.horsLigne) > sansServeurMax && a.courant != nil
+			a.mu.Unlock()
+			if trop {
+				log.Printf("serveur injoignable depuis %s : la partie s'arrête", sansServeurMax)
+				a.arreterHebergement("")
+			}
+		}
+	}
+}
+
+// deps sont les services du serveur dont la partie a besoin, quelle que soit la connexion du moment.
+func (a *Agent) deps() depsHebergement {
+	envoyer := func(v any) bool {
+		a.mu.Lock()
+		e := a.envoyer
+		a.mu.Unlock()
+		if e != nil {
+			e(v)
+		}
+		return e != nil
+	}
+	return depsHebergement{
+		exeCapteur: a.exeCapteur,
+		capture:    a.config().Capture,
+		bus:        a.bus,
+		jetonFrais: func(jctx context.Context, salle string) (string, error) {
+			for len(a.jetons) > 0 { // réponses en retard d'une demande précédente
+				<-a.jetons
+			}
+			if !envoyer(map[string]string{"type": "jeton", "salle": salle}) {
+				return "", errors.New("serveur injoignable")
+			}
+			select {
+			case o := <-a.jetons:
+				return o.Jeton, nil
+			case <-time.After(5 * time.Second):
+				return "", errors.New("pas de jeton du serveur")
+			case <-jctx.Done():
+				return "", jctx.Err()
+			}
+		},
+		signalerErr: func(salle, texte string) { envoyer(map[string]string{"type": "etat", "salle": salle, "erreur": texte}) },
+		diag: func(quoi string, v map[string]any) {
+			v["type"], v["quoi"] = "diag", quoi
+			envoyer(v)
+		},
+	}
+}
+
+func (a *Agent) heberger(ctx context.Context, o ordreServeur, cfg Config) {
+	a.arreterHebergement("")
+	h := demarrerHebergement(ctx, o, cfg, a.deps())
+	a.mu.Lock()
+	a.courant, a.salle = h, o.Salle
+	a.mu.Unlock()
+}
+
+// arreterHebergement arrête la partie (seulement celle de cette salle si salle n'est pas vide).
+func (a *Agent) arreterHebergement(salle string) {
+	a.mu.Lock()
+	h := a.courant
+	if h == nil || (salle != "" && h.salle != salle) {
+		a.mu.Unlock()
+		return
+	}
+	a.courant, a.salle = nil, ""
+	a.mu.Unlock()
+	h.arreter()
+}
+
+func (a *Agent) partie() *hebergement {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.courant
+}
+
 var errNonJumele = errors.New("agent non jumelé")
 
-func (a *Agent) session(ctx context.Context, cfg Config) error {
+func (a *Agent) session(ctx, partieCtx context.Context, cfg Config) error {
 	h := http.Header{}
 	h.Set("Authorization", "Bearer "+cfg.Jeton)
-	c, _, err := websocket.Dial(ctx, urlWS(cfg.Serveur, "/api/agent"), &websocket.DialOptions{HTTPHeader: h})
+	h.Set("X-Agent-Version", version)
+	dctx, annuler := context.WithTimeout(ctx, 15*time.Second)
+	c, _, err := websocket.Dial(dctx, urlWS(cfg.Serveur, "/api/agent"), &websocket.DialOptions{HTTPHeader: h})
+	annuler()
 	if err != nil {
 		return err
 	}
@@ -256,32 +364,26 @@ func (a *Agent) session(ctx context.Context, cfg Config) error {
 		defer cancel()
 		c.Write(wctx, websocket.MessageText, b)
 	}
-	jetons := make(chan ordreServeur, 4)
-	deps := depsHebergement{
-		exeCapteur: a.exeCapteur,
-		capture:    cfg.Capture,
-		bus:        a.bus,
-		jetonFrais: func(jctx context.Context, salle string) (string, error) {
-			envoyer(map[string]string{"type": "jeton", "salle": salle})
+
+	// Ping toutes les 15 s : une connexion morte (Wi-Fi, box) est repérée en moins de 30 s.
+	go func() {
+		t := time.NewTicker(15 * time.Second)
+		defer t.Stop()
+		for {
 			select {
-			case o := <-jetons:
-				return o.Jeton, nil
-			case <-time.After(10 * time.Second):
-				return "", errors.New("pas de jeton du serveur")
-			case <-jctx.Done():
-				return "", jctx.Err()
+			case <-ctx.Done():
+				return
+			case <-t.C:
+				pctx, fin := context.WithTimeout(ctx, 10*time.Second)
+				err := c.Ping(pctx)
+				fin()
+				if err != nil && ctx.Err() == nil {
+					log.Printf("le serveur ne répond plus au ping : reconnexion")
+					c.Close(websocket.StatusGoingAway, "ping sans réponse")
+					return
+				}
 			}
-		},
-		signalerErr: func(salle, texte string) { envoyer(map[string]string{"type": "etat", "salle": salle, "erreur": texte}) },
-	}
-	var courant *hebergement
-	defer func() {
-		if courant != nil {
-			courant.arreter()
 		}
-		a.mu.Lock()
-		a.salle = ""
-		a.mu.Unlock()
 	}()
 
 	for {
@@ -299,36 +401,29 @@ func (a *Agent) session(ctx context.Context, cfg Config) error {
 		switch o.Type {
 		case "bienvenue":
 			a.mu.Lock()
-			a.connecte, a.envoyer, a.derniere = true, envoyer, ""
-			jeux, actuel := a.jeux, a.jeuActuel
+			a.connecte, a.envoyer, a.derniere, a.horsLigne = true, envoyer, "", time.Time{}
+			jeux, actuel, salle := a.jeux, a.jeuActuel, a.salle
 			a.mu.Unlock()
 			envoyer(map[string]any{"type": "jeux", "jeux": jeux})
 			envoyer(map[string]any{"type": "jeu-en-cours", "jeu": actuel})
+			if salle != "" {
+				// Reconnexion pendant une partie : le serveur reprend là où on en était.
+				envoyer(map[string]any{"type": "heberge", "salle": salle})
+			}
 			log.Printf("connecté au serveur (compte : %s)", o.Nom)
 		case "heberger":
-			if courant != nil {
-				courant.arreter()
-			}
-			courant = demarrerHebergement(ctx, o, cfg, deps)
-			a.mu.Lock()
-			a.salle = o.Salle
-			a.mu.Unlock()
+			// La partie dépend de l'agent, pas de cette connexion (elle survit à une reconnexion).
+			a.heberger(partieCtx, o, cfg)
 		case "arreter":
-			if courant != nil && courant.salle == o.Salle {
-				courant.arreter()
-				courant = nil
-				a.mu.Lock()
-				a.salle = ""
-				a.mu.Unlock()
-			}
+			a.arreterHebergement(o.Salle)
 		case "jeton":
 			select {
-			case jetons <- o:
+			case a.jetons <- o:
 			default:
 			}
 		case "places", "exclure":
-			if courant != nil && courant.salle == o.Salle {
-				courant.transmettre(o)
+			if p := a.partie(); p != nil && p.salle == o.Salle {
+				p.transmettre(o)
 			}
 		case "lancer":
 			if err := a.lancerJeu(o.Jeu); err != nil {

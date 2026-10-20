@@ -1,7 +1,8 @@
 import './style.css';
 import { api, getSession, wsUrl, type Utilisateur } from './api.ts';
-import { dansDiscord, seConnecter } from './auth.ts';
-import { Lecteur, type Flux, type Stats } from './lecteur.ts';
+import { dansDiscord, seConnecter, type Identite } from './auth.ts';
+import { Lecteur, type Etat, type Flux, type Mesures } from './lecteur.ts';
+import { PanneauDebug } from './debug.ts';
 import { EnvoiManette } from './envoi.ts';
 import { nomTouche, ouvrirReglages } from './ecranReglages.ts';
 import { charger, enregistrer, type Entree, type Reglages } from './reglages.ts';
@@ -27,6 +28,16 @@ let manetteIndisponible = '';
 let spectateurVoulu = false;  // le joueur a choisi de regarder : on ne lui donne pas de place tout seul
 let confirmerRetrait = '';    // uid en attente de confirmation (deuxième clic)
 let reglages: Reglages = charger();
+let etatLecteur: { e: Etat; detail?: string } = { e: 'connexion' };
+let serveurPerdu = false;     // la connexion à la salle est tombée (la vidéo, elle, peut continuer)
+let pingServeur: number | null = null;
+let derniereMesure: Mesures | null = null;
+let identite: Identite | null = null;
+let regarderAilleurs = false; // la partie est ouverte dans le navigateur : pas de vidéo ici
+let connecteDepuis = 0;      // dernière (re)connexion à la salle
+let arretPrevu = 0;           // minuteur : la vidéo s'arrête si la partie ne reprend pas
+let placeAvant = 0;           // ma place, pour la reprendre après un redémarrage du serveur
+const debug = new PanneauDebug();
 
 function toast(texte: string) {
   const t = $('toast');
@@ -44,6 +55,13 @@ function voile(titre: string | null, texte = '') {
   const b = document.createElement('strong');
   b.textContent = titre;
   $('message').append(b, document.createTextNode(texte));
+}
+
+/** Petit bandeau en haut de la vidéo : ne la cache pas (reconnexions, hôte absent…). */
+function bandeau(texte: string | null) {
+  const b = $('bandeau');
+  b.hidden = texte === null;
+  if (texte !== null) b.textContent = texte;
 }
 
 function el<K extends keyof HTMLElementTagNameMap>(tag: K, props: Record<string, unknown> = {}, ...enfants: (Node | string)[]): HTMLElementTagNameMap[K] {
@@ -142,16 +160,57 @@ function afficher() {
   }
   if (lecteur) actions.prepend(blocManette());
 
-  // La scène
-  if (hote && !apercu) voile('Tu héberges la partie', 'Tes amis voient l’écran de ton PC. Joue directement sur ton PC. « Voir l’aperçu » montre ce qu’ils reçoivent.');
-  else if (!salle.hote) voile('Personne n’héberge pour l’instant', 'Celui qui a le jeu sur son PC clique « Héberger depuis mon PC ».');
-  else if (salle.hote.absent) voile(`${salle.hote.nom} s’est absenté…`, 'La partie reprend s’il revient dans les 30 secondes.');
-
   // Le flux
-  const regarder = etat.flux && (!hote || apercu);
+  const regarder = etat.flux && (!hote || apercu) && !regarderAilleurs;
+  if (regarder) { clearTimeout(arretPrevu); arretPrevu = 0; }
   if (regarder && !lecteur) demarrerLecteur(etat.flux!);
-  else if (!regarder && lecteur) arreterLecteur();
+  else if (!regarder && lecteur && !arretPrevu) {
+    // Juste après une reconnexion au serveur (redémarrage), la partie reprend en quelques secondes :
+    // on garde la vidéo, qui passe par le relais, plutôt que de tout couper.
+    if (Date.now() - connecteDepuis < 10_000 && !hote) arretPrevu = window.setTimeout(() => { arretPrevu = 0; if (!etat?.flux) { arreterLecteur(); afficher(); } }, 8000);
+    else arreterLecteur();
+  }
+
+  // Après un redémarrage du serveur, les places sont perdues : on reprend la sienne si elle est libre.
+  const n = maPlace();
+  if (n) placeAvant = n;
+  else if (placeAvant && salle.hote && !spectateurVoulu && !salle.places[placeAvant - 1]) {
+    envoyer({ type: 'place', joueur: placeAvant });
+    placeAvant = 0;
+  }
   if (etat.flux && attenteJeton) { attenteJeton(etat.flux); attenteJeton = null; }
+  majScene();
+}
+
+/** Ce qui recouvre la vidéo (voile) ou s'affiche par-dessus sans la cacher (bandeau). */
+function majScene() {
+  const salle = etat?.salle;
+  const enLecture = !!lecteur && etatLecteur.e === 'lecture';
+  if (serveurPerdu) bandeau(enLecture ? 'Connexion au serveur perdue, reconnexion… (la partie continue)' : 'Connexion au serveur perdue, reconnexion…');
+  else if (salle?.hote?.absent && !jeSuisHote()) bandeau(`${salle.hote.nom} se reconnecte… la partie continue.`);
+  else if (arretPrevu) bandeau('Le serveur redémarre, la partie reprend…');
+  else bandeau(null);
+
+  if (!salle) return;
+  const nom = salle.hote?.nom || 'l’hôte';
+  if (arretPrevu && lecteur) { if (etatLecteur.e === 'lecture') voile(null); }
+  else if (regarderAilleurs) voile('La partie est ouverte dans ton navigateur', 'F11 pour le plein écran. « Regarder ici » pour revenir dans Discord.');
+  else if (jeSuisHote() && !apercu) voile('Tu héberges la partie', 'Tes amis voient l’écran de ton PC. Joue directement sur ton PC. « Voir l’aperçu » montre ce qu’ils reçoivent.');
+  else if (!salle.hote) voile('Personne n’héberge pour l’instant', 'Celui qui a le jeu sur son PC clique « Héberger depuis mon PC ».');
+  else if (!lecteur) voile(`Connexion au PC de ${nom}…`);
+  else {
+    const { e, detail } = etatLecteur;
+    if (e === 'lecture') voile(null);
+    else if (e === 'connexion') voile(`Connexion au PC de ${nom}…`, detail || '');
+    else if (e === 'attente-image') voile(`Connecté au PC de ${nom}`, detail || 'L’image arrive…');
+    else if (e === 'erreur') voile('La vidéo ne peut pas s’afficher', detail || '');
+    else voile('Connexion coupée', detail || 'Reconnexion…');
+  }
+}
+
+/** Mesures et erreurs envoyées au journal du serveur (pour comprendre une coupure après coup). */
+function envoyerDiag(quoi: string, v: Record<string, string | number | boolean> = {}) {
+  envoyer({ type: 'diag', quoi, ...v });
 }
 
 /** L'hôte choisit un jeu de sa bibliothèque : son agent lance Ryubing en plein écran. */
@@ -195,23 +254,20 @@ function afficherJeuEnCours() {
 
 function demarrerLecteur(flux: Flux) {
   const canvas = $<HTMLCanvasElement>('ecran');
+  etatLecteur = { e: 'connexion' };
   lecteur = new Lecteur(
     canvas,
     dansDiscord(),
-    (e, detail) => {
-      const nom = etat?.salle.hote?.nom || 'l’hôte';
-      if (e === 'lecture') voile(null);
-      else if (e === 'connexion') voile(`Connexion au PC de ${nom}…`, detail || '');
-      else if (e === 'attente-image') voile(`Connecté au PC de ${nom}`, detail || 'L’image arrive…');
-      else voile('Connexion coupée', detail || '');
-    },
-    (s: Stats) => afficherStats(s),
+    (e, detail) => { etatLecteur = { e, detail }; majScene(); },
+    (m) => { derniereMesure = m; afficherStats(m); },
     () => new Promise<Flux>((resolve, reject) => {
       attenteJeton = resolve;
       envoyer({ type: 'jeton' });
-      setTimeout(() => reject(new Error('pas de jeton')), 8000);
+      setTimeout(() => reject(new Error('pas de jeton')), 4000);
     }),
+    envoyerDiag,
   );
+  envoyerDiag('lecteur', { discord: dansDiscord(), webcodecs: typeof VideoDecoder !== 'undefined', ecran: `${screen.width}x${screen.height}`, dpr: devicePixelRatio });
   lecteur.surManetteIndisponible = (raison) => { manetteIndisponible = raison; majManette(); };
   envoiManette = new EnvoiManette((m) => lecteur?.envoyerCommande(m), () => reglages, () => majManette());
   envoiManette.peutJouer = jeJoueIci;
@@ -233,6 +289,7 @@ function arreterLecteur() {
   manetteIndisponible = '';
   lecteur?.arreter();
   lecteur = null;
+  derniereMesure = null;
   $('stats').hidden = true;
 }
 
@@ -290,16 +347,18 @@ function remplirManette(d: HTMLElement) {
   d.replaceChildren(...enfants);
 }
 
-function afficherStats(s: Stats) {
+function afficherStats(m: Mesures) {
   const e = $('stats');
   e.hidden = false;
-  e.classList.toggle('lent', (s.image ?? 0) > 80);
-  e.innerHTML = '';
-  const part = (label: string, valeur: string) => e.append(`${label} `, el('b', { textContent: valeur }), '  ');
-  part('image', s.image === null ? '…' : `${s.image} ms`);
-  part('réseau', s.allerRetour === null ? '…' : `${s.allerRetour} ms`);
-  part('', `${s.ips} i/s`);
-  e.title = `Relais : ${s.relais}. « image » = retard entre la capture sur le PC de l’hôte et l’affichage ici.`;
+  e.classList.toggle('lent', (m.image ?? 0) > 80 || (m.ips > 0 && m.ips < 45));
+  e.replaceChildren(el('b', { textContent: m.image === null ? '…' : `${m.image} ms` }), ' · ', el('b', { textContent: `${m.ips} i/s` }));
+}
+
+function ouvrirDebug(v: boolean) {
+  debug.ouvert = v;
+  $('bouton-debug').classList.toggle('actif', v);
+  try { localStorage.setItem('switch-emu.debug', v ? '1' : ''); } catch { /* stockage indisponible */ }
+  debug.maj(derniereMesure, pingServeur);
 }
 
 function envoyer(m: object) {
@@ -307,14 +366,32 @@ function envoyer(m: object) {
 }
 
 function connecterSalle(essai = 0) {
-  ws = new WebSocket(wsUrl(`/api/salle?session=${encodeURIComponent(getSession())}`));
-  ws.onopen = () => { essai = 0; };
-  ws.onmessage = (e) => {
+  const s = new WebSocket(wsUrl(`/api/salle?session=${encodeURIComponent(getSession())}`));
+  ws = s;
+  let dernierMessage = Date.now();
+  // Ping toutes les 2 s : mesure le ping du serveur, et garde la connexion active (Discord coupe
+  // les connexions silencieuses). Sans réponse depuis 8 s, la connexion est morte : on repart.
+  const minuteur = window.setInterval(() => {
+    if (s.readyState !== WebSocket.OPEN) return;
+    if (Date.now() - dernierMessage > 8000) { s.close(); return; }
+    s.send(JSON.stringify({ type: 'ping', t: performance.now() }));
+  }, 2000);
+  s.onopen = () => {
+    essai = 0;
+    dernierMessage = connecteDepuis = Date.now();
+    if (serveurPerdu) { serveurPerdu = false; majScene(); }
+  };
+  s.onmessage = (e) => {
+    dernierMessage = Date.now();
     const m = JSON.parse(e.data);
-    if (m.type === 'etat') { etat = m; afficher(); majManette(); afficherJeuEnCours(); }
+    if (m.type === 'pong') pingServeur = Math.round(performance.now() - m.t);
+    else if (m.type === 'etat') { etat = m; afficher(); majManette(); afficherJeuEnCours(); }
     else if (m.type === 'erreur') toast(m.texte);
   };
-  ws.onclose = (e) => {
+  s.onclose = (e) => {
+    clearInterval(minuteur);
+    pingServeur = null;
+    if (ws !== s) return;
     if (e.code === 4001) { voile('Session expirée', 'Relance l’Activité.'); return; }
     if (e.code === 4003) {
       arreterLecteur();
@@ -324,14 +401,57 @@ function connecterSalle(essai = 0) {
       $('actions').replaceChildren();
       return;
     }
-    voile('Connexion au serveur perdue', 'Reconnexion…');
-    setTimeout(() => connecterSalle(essai + 1), Math.min(10_000, 1000 * 2 ** essai));
+    serveurPerdu = true;
+    if (!lecteur) voile('Connexion au serveur perdue', 'Reconnexion…');
+    majScene();
+    setTimeout(() => connecterSalle(essai + 1), essai === 0 ? 300 : Math.min(5000, 500 * 2 ** essai));
   };
 }
+
+// Menu debug, résumé envoyé au journal du serveur, bouton « Agrandir »
+$('scene').append(debug.racine);
+$('bouton-debug').onclick = () => ouvrirDebug(!debug.ouvert);
+$('stats').onclick = () => ouvrirDebug(!debug.ouvert);
+try { if (localStorage.getItem('switch-emu.debug')) ouvrirDebug(true); } catch { /* stockage indisponible */ }
+setInterval(() => debug.maj(derniereMesure, pingServeur), 1000);
+setInterval(() => {
+  const m = derniereMesure;
+  if (m) envoyerDiag('resume', { ips: m.ips, image: m.image ?? -1, pingPc: m.pingPc ?? -1, pingServeur: pingServeur ?? -1, debit: m.debit, relais: m.relais, jetees: m.jetees, reco: m.reconnexions, codec: m.codec, decodeur: m.decodeur, taille: `${m.largeur}x${m.hauteur}` });
+}, 30_000);
+/** Plein écran si c'est permis (navigateur), sinon la vidéo prend toute la fenêtre de l'Activité. */
+async function basculerPleinEcran() {
+  const app = $('app');
+  if (document.fullscreenElement) { await document.exitFullscreen(); return; }
+  if (app.classList.contains('grand')) { app.classList.remove('grand'); $('bouton-grand').textContent = 'Plein écran'; return; }
+  try {
+    await $('scene').requestFullscreen();
+  } catch {
+    app.classList.add('grand');
+    $('bouton-grand').textContent = 'Réduire';
+    if (dansDiscord()) toast('Discord ne permet pas le vrai plein écran : « Ouvrir dans le navigateur », puis F11.');
+  }
+}
+$('bouton-grand').onclick = basculerPleinEcran;
+$('ecran').ondblclick = basculerPleinEcran;
+
+// « Ouvrir dans le navigateur » : même partie, même compte, dans un vrai navigateur (F11 pour le plein écran).
+// Ici, la vidéo s'arrête pour ne pas la recevoir deux fois.
+$('bouton-navigateur').hidden = !dansDiscord();
+$('bouton-navigateur').onclick = async () => {
+  if (regarderAilleurs) { regarderAilleurs = false; $('bouton-navigateur').textContent = 'Ouvrir dans le navigateur'; afficher(); return; }
+  try {
+    const { url } = await api<{ url: string }>('/api/passage', { method: 'POST' });
+    await identite?.sdk?.commands.openExternalLink({ url });
+    regarderAilleurs = true;
+    $('bouton-navigateur').textContent = 'Regarder ici';
+    afficher();
+  } catch (e) { toast((e as Error).message || 'Impossible d’ouvrir le navigateur.'); }
+};
 
 async function main() {
   try {
     const id = await seConnecter();
+    identite = id;
     moi = id.user;
     voile('Connecté', `Bonjour ${moi.nom} !`);
     connecterSalle();

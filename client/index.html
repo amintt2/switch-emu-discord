@@ -9,12 +9,20 @@
   <div id="app">
     <header>
       <h1>Switch EMU<span id="jeu-en-cours"></span></h1>
-      <span id="stats" class="stats" hidden></span>
+      <div class="outils">
+        <button id="stats" class="stats" type="button" title="Menu debug : images par seconde, pings, latence" hidden></button>
+        <button id="bouton-debug" class="secondaire petit" type="button" title="Menu debug">Debug</button>
+      </div>
     </header>
     <main>
       <section id="scene">
         <canvas id="ecran" width="1280" height="720"></canvas>
         <div id="voile"><div class="message" id="message">Connexion…</div></div>
+        <div id="bandeau" role="status" hidden></div>
+        <div class="boutons-scene">
+          <button id="bouton-navigateur" class="secondaire petit" type="button" title="Ouvre la partie dans ton navigateur (plein écran avec F11)" hidden>Ouvrir dans le navigateur</button>
+          <button id="bouton-grand" class="secondaire petit" type="button" title="Plein écran (ou double-clic sur la vidéo)">Plein écran</button>
+        </div>
       </section>
       <aside id="panneau">
         <section id="bloc-places" hidden>

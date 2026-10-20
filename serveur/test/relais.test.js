@@ -89,3 +89,14 @@ test('l’hôte peut couper la connexion de quelqu’un qu’il a retiré', () =
   assert.equal(retire.ferme, 4003);
   assert.equal(reste.ferme, null);
 });
+
+test('battements : le relais répond lui-même, sans rien transmettre', () => {
+  const { entrer } = fabrique();
+  const hote = entrer('hote', 'h');
+  const ami = entrer('ami', 'a');
+  const avant = hote.recus.length;
+  ami.texte({ type: 'battement' });
+  hote.texte({ type: 'battement' });
+  assert.deepEqual(ami.recus, [{ type: 'battement' }]);
+  assert.deepEqual(hote.recus.slice(avant), [{ type: 'battement' }]);
+});

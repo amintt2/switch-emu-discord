@@ -30,6 +30,8 @@ type capteur struct {
 	mu         sync.Mutex
 	images     chan image
 	dernierIDR time.Time
+	idrPrevu   bool // une demande arrivée trop tôt : l'image clé partira à la fin du délai
+	nbIDR      int
 }
 
 func lancerCapteur(ctx context.Context, exe string, c Capture) (*capteur, error) {
@@ -97,15 +99,36 @@ func (k *capteur) lire(r io.Reader) {
 	}
 }
 
-// demanderIDR demande une image clé, au plus 2 fois par seconde.
+const intervalleIDR = 500 * time.Millisecond
+
+// demanderIDR demande une image clé, au plus 2 fois par seconde. Une demande trop rapprochée n'est
+// jamais perdue : elle est regroupée et part à la fin du délai (sinon un ami qui arrive juste après
+// un autre attendrait une image clé qui ne vient jamais, le GOP étant infini).
 func (k *capteur) demanderIDR() {
 	k.mu.Lock()
 	defer k.mu.Unlock()
-	if time.Since(k.dernierIDR) < 500*time.Millisecond {
+	if attente := intervalleIDR - time.Since(k.dernierIDR); attente > 0 {
+		if !k.idrPrevu {
+			k.idrPrevu = true
+			time.AfterFunc(attente, func() {
+				k.mu.Lock()
+				k.idrPrevu = false
+				k.mu.Unlock()
+				k.demanderIDR()
+			})
+		}
 		return
 	}
 	k.dernierIDR = time.Now()
+	k.nbIDR++
 	io.WriteString(k.stdin, "idr\n")
+}
+
+// imagesCles renvoie le nombre d'images clés demandées depuis le début.
+func (k *capteur) imagesCles() int {
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	return k.nbIDR
 }
 
 func (k *capteur) debit(kbps int) {
