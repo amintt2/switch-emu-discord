@@ -1,0 +1,11 @@
+**/node_modules
+**/dist
+**/build
+agent
+capteur
+prototypes
+relais
+sonde
+.git
+*.exe
+*.dll
