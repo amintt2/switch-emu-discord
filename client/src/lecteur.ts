@@ -127,6 +127,7 @@ export class Lecteur {
   private prochainDirect = 0;
   private retardsRelais: number[] = [];  // retard de l'image par le relais (dernières secondes), pour comparer
   private retardsDirect: number[] = [];
+  private retardsSeconde: number[] = [];  // retards des images de la seconde en cours
   private attenteDirect = 30_000;
   private ouvertDepuis = 0;
 
@@ -364,6 +365,8 @@ export class Lecteur {
     this.pingDirectSansReponse = 0;  // un nouveau lien ne reprend pas le délai de l'ancien
     d.surOuvert = () => {
       this.pingDirectSansReponse = 0;
+      this.retardsDirect = [];
+      this.retardsSeconde = [];
       // Le relais n'envoie plus d'images (il garde la négociation et sert de secours) ; on repart d'une image clé.
       this.envoyerRelais({ type: 'pause', p: true });
       this.attendreCle = true;
@@ -409,7 +412,10 @@ export class Lecteur {
       this.hotePresent = true;
       this.horloge.ajouter(m.t, maintenant(), m.s);
     } else if (m.type === 'saute') {
-      this.jetees++;  // le PC de l'hôte a sauté des images (connexion directe trop lente) : la qualité s'adapte
+      // Le PC de l'hôte a sauté des images (connexion directe trop lente) : la qualité s'adapte, et on
+      // repart de la prochaine image clé (redemandée jusqu'à ce qu'elle arrive).
+      this.jetees++;
+      this.attendreCle = true;
     } else if (m.type === 'reponse' && typeof m.sdp === 'string') {
       this.direct?.reponse(m.sdp).catch(() => this.direct?.fermer());
     } else if (m.type === 'vibration') {
@@ -484,6 +490,7 @@ export class Lecteur {
         f.close();
         this.retards.push(retard);
         if (this.retards.length > 120) this.retards.shift();
+        this.retardsSeconde.push(retard);
         this.images++;
         this.erreursDecodeur = 0;
         if (!this.enLecture) { this.enLecture = true; this.surEtat('lecture'); }
@@ -520,7 +527,10 @@ export class Lecteur {
     const r = [...this.retards].sort((a, b) => a - b);
     const ping = this.horloge.allerRetour.at(-1);
     const image = r.length && this.horloge.allerRetour.length ? Math.max(0, Math.round(r[Math.floor(r.length / 2)])) : null;
-    this.comparerDirect(image);
+    // Comparaison direct/relais : seulement les images arrivées pendant cette seconde.
+    const s = this.retardsSeconde.sort((a, b) => a - b);
+    this.comparerDirect(s.length && this.horloge.allerRetour.length ? Math.max(0, Math.round(s[Math.floor(s.length / 2)])) : null);
+    this.retardsSeconde = [];
     // Qualité adaptative : seulement quand l'image arrive (pas pendant une attente ou une reconnexion).
     if (this.enLecture && this.hotePresent && !this.hoteSansCouches && !this.compat) {
       const avant = this.adaptation.couche;

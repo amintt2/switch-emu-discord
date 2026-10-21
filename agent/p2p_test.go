@@ -58,6 +58,24 @@ func TestP2PNAccumulePasDeRetard(t *testing.T) {
 	}
 }
 
+// Écran immobile : après un saut, plus aucune image ne vient ; l'image clé est redemandée quand même.
+func TestP2PRelanceCleEcranImmobile(t *testing.T) {
+	c := &fauxCanal{}
+	p := &lienP2P{video: c, fini: make(chan struct{})}
+	c.attente = attenteImageMax + 1
+	p.envoyer(make([]byte, 100), false, false) // sautée
+	if p.relancerCle() {
+		t.Fatal("file encore pleine : on attend")
+	}
+	c.attente = 0
+	if !p.relancerCle() || p.relancerCle() {
+		t.Fatal("file vidée : une (seule) demande d'image clé")
+	}
+	if !p.envoyer(make([]byte, 100), true, false) || len(c.envoyes) != 1 || p.relancerCle() {
+		t.Fatal("l'image clé part, plus rien à relancer")
+	}
+}
+
 func TestP2PDecoupageEnMorceaux(t *testing.T) {
 	c := &fauxCanal{}
 	p := &lienP2P{video: c, fini: make(chan struct{})}

@@ -320,6 +320,8 @@ func (h *hebergement) tourner(ctx context.Context, o ordreServeur, cfg Config, d
 	defer mesure.Stop()
 	entretien := time.NewTicker(5 * time.Second)
 	defer entretien.Stop()
+	relanceDirects := time.NewTicker(200 * time.Millisecond)
+	defer relanceDirects.Stop()
 	dernieres := 0
 	var clesAvant [nbCouches]int
 	for {
@@ -400,6 +402,13 @@ func (h *hebergement) tourner(ctx context.Context, o ordreServeur, cfg Config, d
 			diff.demanderIDR(int(p.couche.Load()))
 		case p := <-finDirect:
 			delete(directs, p)
+		case <-relanceDirects.C:
+			// Image sautée sur un écran devenu immobile : la file vidée, on redemande l'image clé nous-mêmes.
+			for p := range directs {
+				if p.relancerCle() {
+					diff.demanderIDR(int(p.couche.Load()))
+				}
+			}
 		case <-diff.besoin:
 			for q := coucheBasse; q < nbCouches; q++ {
 				if regardee(q) > 0 {

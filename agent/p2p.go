@@ -134,6 +134,17 @@ func (p *lienP2P) envoyer(charge []byte, cle, son bool) bool {
 	return true
 }
 
+// relancerCle : une image a été sautée et la file s'est vidée, mais aucune image n'est venue demander
+// l'image clé (écran immobile : le capteur n'envoie plus rien). Appelée régulièrement par la partie ;
+// renvoie true s'il faut demander une image clé maintenant (une seule fois).
+func (p *lienP2P) relancerCle() bool {
+	if !p.besoinCle.Load() || p.cleDemandee || p.video.BufferedAmount() >= attenteImageMax/2 {
+		return false
+	}
+	p.cleDemandee = true
+	return true
+}
+
 // accepterP2P répond à l'offre WebRTC d'un ami (reçue par le relais) et attend l'ouverture des canaux.
 func accepterP2P(ctx context.Context, offre, uid string, repondre func(sdp string), surMessage func(p *lienP2P, b []byte)) (*lienP2P, error) {
 	pc, err := webrtc.NewPeerConnection(webrtc.Configuration{ICEServers: []webrtc.ICEServer{{URLs: serveursSTUN}}})
