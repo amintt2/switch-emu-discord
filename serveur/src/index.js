@@ -360,12 +360,14 @@ app.register(async (scope) => {
       try { m = JSON.parse(raw); } catch { return; }
       // Après une reconnexion, l'agent dit quelle salle il héberge encore.
       if (m?.type === 'heberge' && m.salle === '') {
-        // L'agent (redémarré) n'héberge rien : on relance les parties que le serveur croit en cours.
+        // L'agent (redémarré) n'héberge rien : une reprise en attente n'a plus d'objet, et on relance les
+        // parties que le serveur croit en cours (avec leurs places et leurs exclusions).
+        reprises.delete(a.uid);
         for (const s of salles.salles.values()) {
           if (s.hote !== a.uid || arretees.get(a.uid) === s.id) continue;
           app.log.info({ uid: a.uid, salle: court(s.id) }, 'agent redémarré : la partie est relancée');
           commanderAgent(a.uid, s.id, true);
-          envoyerPlaces(s.id);
+          resynchroniser(a.uid, s.id);
         }
         return;
       }
@@ -377,6 +379,7 @@ app.register(async (scope) => {
       }
       // La capture s'est arrêtée sur le PC de l'hôte : la partie s'arrête pour tout le monde.
       if (m?.type === 'fin' && typeof m.salle === 'string' && m.salle.length <= 64) {
+        if (reprises.get(a.uid)?.salle === m.salle) reprises.delete(a.uid);
         if (salles.get(m.salle)?.hote === a.uid) {
           salles.arreter(m.salle, a.uid);
           arretees.set(a.uid, m.salle);

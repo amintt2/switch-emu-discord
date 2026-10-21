@@ -278,7 +278,9 @@ export class Lecteur {
       return;
     }
     this.direct = d;
+    this.pingDirectSansReponse = 0;  // un nouveau lien ne reprend pas le délai de l'ancien
     d.surOuvert = () => {
+      this.pingDirectSansReponse = 0;
       // Le relais n'envoie plus d'images (il garde la négociation et sert de secours) ; on repart d'une image clé.
       this.envoyerRelais({ type: 'pause', p: true });
       this.attendreCle = true;
@@ -291,6 +293,7 @@ export class Lecteur {
     d.surFin = (etaitOuvert) => {
       if (this.direct !== d) return;
       this.direct = null;
+      this.pingDirectSansReponse = 0;
       if (etaitOuvert) {
         // Retour immédiat par le relais, sur la couche choisie entre-temps.
         this.envoyerRelais({ type: 'qualite', q: this.adaptation.couche });
