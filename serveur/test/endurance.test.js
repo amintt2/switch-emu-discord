@@ -48,8 +48,11 @@ async function arreterServeur() {
   const s = serveur;
   serveur = null;
   if (!s || s.exitCode !== null) return;
+  const sortie = once(s, 'exit');
   s.kill();
-  await Promise.race([once(s, 'exit'), pause(5000).then(() => s.kill('SIGKILL'))]);
+  const force = setTimeout(() => s.kill('SIGKILL'), 5000);
+  await sortie;  // vraiment arrêté (le port est libre) avant de continuer
+  clearTimeout(force);
 }
 
 async function session(nom) {

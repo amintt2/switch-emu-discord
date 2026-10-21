@@ -102,7 +102,8 @@ export class Lecteur {
   /** La couche demandée n'a rien envoyé : retour au 1080p H.264 si possible, sinon on explique. */
   private coucheMuette() {
     this.diag('couche-muette', { q: this.couche, compat: this.compat });
-    if (this.compat && !(this.codecs.avc1080 || this.codecs.avc720)) {
+    // Compatibilité imposée (pas de H.264 ici, ou il a échoué au décodage) : pas de retour au H.264.
+    if (this.compat && (!this.compatChoisie || !(this.codecs.avc1080 || this.codecs.avc720))) {
       this.changementCouche = Date.now();  // pas de boucle : on ne le redit pas tout de suite
       this.surEtat('erreur', 'Le PC de l’hôte n’envoie pas la vidéo compatible avec ton lecteur : il doit mettre son agent à jour. En attendant, « Ouvrir dans le navigateur ».');
       return;
