@@ -42,6 +42,23 @@ const SILENCE_DIRECT_MS = 3000;   // plus rien en direct : retour par le relais
 const FILE_MAX = 3;               // au-delà, le décodeur ne suit pas : on saute à la prochaine image clé
 
 const pause = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+/** Formats vidéo testés au démarrage (pour savoir quoi proposer quand le H.264 manque). */
+const CODECS_TESTES: Record<string, string> = {
+  avc1080: 'avc1.4d042a', avc720: 'avc1.4d0420', avcBase: 'avc1.42e01f', avcHigh: 'avc1.640028',
+  vp8: 'vp8', vp9: 'vp09.00.10.08', av1: 'av01.0.04M.08', hevc: 'hev1.1.6.L120.90',
+};
+
+/** Ce que ce navigateur sait décoder (matériel ou logiciel). */
+export async function codecsSupportes(): Promise<Record<string, boolean>> {
+  const r: Record<string, boolean> = {};
+  await Promise.all(Object.entries(CODECS_TESTES).map(async ([nom, codec]) => {
+    try {
+      r[nom] = !!(await VideoDecoder.isConfigSupported({ codec, optimizeForLatency: true })).supported;
+    } catch { r[nom] = false; }
+  }));
+  return r;
+}
 const maintenant = () => performance.timeOrigin + performance.now();
 
 export class Lecteur {
@@ -57,7 +74,11 @@ export class Lecteur {
   private retards: number[] = [];
   private enLecture = false;
   private hotePresent = true;
-  private dernierMessage = 0;
+  // Heure du plus vieux message resté sans réponse (0 = rien en attente), par le relais et en direct.
+  // On juge une connexion morte sur un battement ou un ping sans réponse, pas sur un simple silence :
+  // un onglet en arrière-plan n'a plus ses minuteurs qu'une fois par minute.
+  private battementSansReponse = 0;
+  private pingDirectSansReponse = 0;
   private timers: number[] = [];
   private relaisActif = '';
   private jetonRecu = Date.now();
@@ -113,6 +134,16 @@ export class Lecteur {
       this.surEtat('erreur', 'Cet appareil ne sait pas décoder la vidéo (WebCodecs absent). Mets Discord ou ton navigateur à jour.');
       return;
     }
+    // Le H.264 manque parfois (certains Discord) : on le dit tout de suite, avec la solution.
+    const codecs = await codecsSupportes();
+    this.diag('codecs', codecs);
+    if (this.ferme) return;
+    if (!codecs.avc1080 && !codecs.avc720) {
+      this.surEtat('erreur', this.dansDiscord
+        ? 'Ton Discord ne sait pas décoder la vidéo (H.264). Clique « Ouvrir dans le navigateur » en bas de l’écran : dans Chrome ou Edge, ça marche.'
+        : 'Ce navigateur ne sait pas décoder la vidéo (H.264). Essaie Chrome ou Edge à jour.');
+      return;
+    }
     let echecs = 0;
     while (!this.ferme) {
       const r = await this.essayerRelais(flux);
@@ -127,8 +158,9 @@ export class Lecteur {
         this.surEtat('coupe', 'Relais injoignable, nouvel essai…');
       }
       await pause(r.ouvert ? 150 : Math.min(4000, 250 * 2 ** echecs));
-      // Le jeton du relais ne dure que 5 min : on en prend un neuf s'il est vieux ou si l'ouverture a échoué.
-      if (!r.ouvert || Date.now() - this.jetonRecu > AGE_MAX_JETON_MS) {
+      // Le jeton du relais ne dure que 5 min : on en prend un neuf s'il est vieux, refusé (4001) ou si
+      // l'ouverture a échoué.
+      if (!r.ouvert || r.code === 4001 || Date.now() - this.jetonRecu > AGE_MAX_JETON_MS) {
         try { flux = await this.demanderJeton(); this.jetonRecu = Date.now(); } catch { /* on réessaie avec l'ancien */ }
       }
     }
@@ -168,21 +200,27 @@ export class Lecteur {
         this.relaisActif = nom;
         this.attendreCle = true;
         this.hotePresent = true;
-        this.dernierMessage = Date.now();
+        this.battementSansReponse = 0;
         this.surEtat('attente-image');
         this.changementCouche = Date.now();
         if (this.adaptation.couche !== 0) this.envoyer({ type: 'qualite', q: this.adaptation.couche });
         this.demanderCle();
         this.timers.push(
-          window.setInterval(() => this.envoyer({ type: 'ping', t: maintenant() }), 1000),
-          window.setInterval(() => this.envoyerRelais({ type: 'battement' }), BATTEMENT_MS),
+          window.setInterval(() => {
+            if (this.direct?.ouvert && !this.pingDirectSansReponse) this.pingDirectSansReponse = Date.now();
+            this.envoyer({ type: 'ping', t: maintenant() });
+          }, 1000),
+          window.setInterval(() => {
+            if (!this.battementSansReponse) this.battementSansReponse = Date.now();
+            this.envoyerRelais({ type: 'battement' });
+          }, BATTEMENT_MS),
           window.setInterval(() => this.publierMesures(), 1000),
           window.setInterval(() => {
             // Connexion morte (Wi-Fi coupé, relais redémarré) : on la ferme pour repartir tout de suite.
-            if (Date.now() - this.dernierMessage > SILENCE_MAX_MS) { mort = true; ws.close(); return; }
+            if (this.battementSansReponse && Date.now() - this.battementSansReponse > SILENCE_MAX_MS) { mort = true; ws.close(); return; }
             if (this.attendreCle && this.hotePresent && Date.now() - this.derniereDemandeCle > RELANCE_CLE_MS) this.demanderCle();
             // Connexion directe (hors Discord) : tentée quand l'image arrive bien, abandonnée si elle se tait.
-            if (this.direct?.ouvert && Date.now() - this.direct.dernierMessage > SILENCE_DIRECT_MS) this.direct.fermer();
+            if (this.direct?.ouvert && this.pingDirectSansReponse && Date.now() - this.pingDirectSansReponse > SILENCE_DIRECT_MS) this.direct.fermer();
             if (!this.dansDiscord && !this.direct && typeof RTCPeerConnection !== 'undefined' && this.hotePresent
               && this.horloge.allerRetour.length > 0 && Date.now() - this.ouvertDepuis > DIRECT_APRES_MS
               && Date.now() > this.prochainDirect) void this.essayerDirect();
@@ -190,7 +228,7 @@ export class Lecteur {
         );
       };
       ws.onmessage = (e) => {
-        this.dernierMessage = Date.now();
+        this.battementSansReponse = 0;
         if (typeof e.data === 'string') this.surTexte(e.data);
         else if (!this.direct?.ouvert) this.surImage(e.data);  // en direct : les images du relais (en vol) sont ignorées
       };
@@ -231,8 +269,8 @@ export class Lecteur {
     let d: Direct;
     try {
       d = new Direct(
-        (b) => { this.dernierMessage = Date.now(); this.surImage(b); },
-        (t) => this.surTexte(t),
+        (b) => { this.pingDirectSansReponse = 0; this.surImage(b); },
+        (t) => { this.pingDirectSansReponse = 0; this.surTexte(t); },
         () => { this.attendreCle = true; this.demanderCle(); },  // une image perdue en route
       );
     } catch {
@@ -240,7 +278,9 @@ export class Lecteur {
       return;
     }
     this.direct = d;
+    this.pingDirectSansReponse = 0;  // un nouveau lien ne reprend pas le délai de l'ancien
     d.surOuvert = () => {
+      this.pingDirectSansReponse = 0;
       // Le relais n'envoie plus d'images (il garde la négociation et sert de secours) ; on repart d'une image clé.
       this.envoyerRelais({ type: 'pause', p: true });
       this.attendreCle = true;
@@ -253,6 +293,7 @@ export class Lecteur {
     d.surFin = (etaitOuvert) => {
       if (this.direct !== d) return;
       this.direct = null;
+      this.pingDirectSansReponse = 0;
       if (etaitOuvert) {
         // Retour immédiat par le relais, sur la couche choisie entre-temps.
         this.envoyerRelais({ type: 'qualite', q: this.adaptation.couche });
@@ -369,7 +410,9 @@ export class Lecteur {
     const message = e instanceof Error ? `${e.name}: ${e.message}` : String(e);
     this.diag('erreur-decodeur', { message, codec: this.codec, logiciel: this.logiciel, n: this.erreursDecodeur });
     if (this.erreursDecodeur >= 2 && !this.logiciel) this.logiciel = true;  // le décodeur matériel n'y arrive pas
-    if (this.erreursDecodeur >= 6) this.surEtat('erreur', `La vidéo ne se décode pas sur cet appareil (${this.codec}). Essaie Discord à jour sur ordinateur.`);
+    if (this.erreursDecodeur >= 6) this.surEtat('erreur', this.dansDiscord
+      ? `Ton Discord ne décode pas cette vidéo (${this.codec}). Clique « Ouvrir dans le navigateur » en bas de l’écran.`
+      : `Ce navigateur ne décode pas cette vidéo (${this.codec}). Essaie Chrome ou Edge à jour.`);
     this.attendreCle = true;
     this.codec = '';
     this.demanderCle();

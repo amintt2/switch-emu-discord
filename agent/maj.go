@@ -107,10 +107,18 @@ type versionPubliee struct {
 
 var clientMaj = &http.Client{Timeout: 10 * time.Minute}
 
+// accepterPour : l'API de GitHub (JSON) refuse « octet-stream » (erreur 415) ; les fichiers le veulent.
+func accepterPour(url string) string {
+	if strings.HasPrefix(url, "https://api.github.com/") {
+		return "application/vnd.github+json"
+	}
+	return "application/octet-stream"
+}
+
 func telecharger(ctx context.Context, url string, max int64) ([]byte, error) {
 	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	req.Header.Set("User-Agent", "SwitchEMU-agent/"+version)
-	req.Header.Set("Accept", "application/octet-stream")
+	req.Header.Set("Accept", accepterPour(url))
 	res, err := clientMaj.Do(req)
 	if err != nil {
 		return nil, err

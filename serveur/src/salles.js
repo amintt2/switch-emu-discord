@@ -4,8 +4,8 @@
 // J1 revient à l'hôte quand il commence à héberger (il joue sur son PC) ; il peut la laisser à un ami.
 // Les autres participants sont spectateurs.
 
-export const DELAI_DEPART_HOTE_MS = 30_000;
-export const DELAI_PLACE_MS = 60_000;      // une place est gardée 1 min à quelqu'un qui s'est déconnecté
+export const DELAI_DEPART_HOTE_MS = 90_000;  // une coupure de la box de l'hôte ne termine pas la partie
+export const DELAI_PLACE_MS = 120_000;     // une place est gardée 2 min à quelqu'un qui s'est déconnecté
 export const DUREE_EXCLUSION_MS = 10 * 60_000;
 export const NB_PLACES = 4;
 

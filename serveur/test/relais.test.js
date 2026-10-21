@@ -6,6 +6,9 @@ import { signer } from '../src/jetons.js';
 
 class FauxWS extends EventEmitter {
   constructor() { super(); this.readyState = 1; this.recus = []; this.bufferedAmount = 0; this.ferme = null; }
+  // Comme la vraie bibliothèque ws : ces méthodes existent (un état rangé sous ces noms les écraserait).
+  pause() {}
+  resume() {}
   send(d) { this.recus.push(typeof d === 'string' ? JSON.parse(d) : Buffer.from(d)); }
   close(code) { this.ferme = code; this.readyState = 3; this.emit('close'); }
   texte(m) { this.emit('message', Buffer.from(JSON.stringify(m)), false); }

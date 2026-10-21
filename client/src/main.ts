@@ -267,7 +267,13 @@ function demarrerLecteur(flux: Flux) {
   lecteur = new Lecteur(
     canvas,
     dansDiscord(),
-    (e, detail) => { etatLecteur = { e, detail }; majScene(); majTactile(); },
+    (e, detail) => {
+      etatLecteur = { e, detail };
+      // Vidéo impossible dans Discord : le navigateur est la solution, on met le bouton en avant.
+      $('bouton-navigateur').classList.toggle('mis-en-avant', e === 'erreur' && dansDiscord());
+      majScene();
+      majTactile();
+    },
     (m) => { derniereMesure = m; afficherStats(m); },
     () => new Promise<Flux>((resolve, reject) => {
       attenteJeton = resolve;
@@ -412,21 +418,25 @@ function envoyer(m: object) {
 function connecterSalle(essai = 0) {
   const s = new WebSocket(wsUrl(`/api/salle?session=${encodeURIComponent(getSession())}`));
   ws = s;
-  let dernierMessage = Date.now();
+  let pingSansReponse = 0;  // heure du plus vieux ping resté sans réponse (0 = aucun)
   // Ping toutes les 2 s : mesure le ping du serveur, et garde la connexion active (Discord coupe
-  // les connexions silencieuses). Sans réponse depuis 8 s, la connexion est morte : on repart.
+  // les connexions silencieuses). Un ping sans réponse depuis 8 s : la connexion est morte, on repart.
+  // (On juge sur les pings envoyés : un onglet en arrière-plan n'a plus ses minuteurs qu'une fois par
+  // minute, et un long silence n'y veut pas dire que la connexion est morte.)
   const minuteur = window.setInterval(() => {
     if (s.readyState !== WebSocket.OPEN) return;
-    if (Date.now() - dernierMessage > 8000) { s.close(); return; }
+    if (pingSansReponse && Date.now() - pingSansReponse > 8000) { s.close(); return; }
+    if (!pingSansReponse) pingSansReponse = Date.now();
     s.send(JSON.stringify({ type: 'ping', t: performance.now() }));
   }, 2000);
   s.onopen = () => {
     essai = 0;
-    dernierMessage = connecteDepuis = Date.now();
+    connecteDepuis = Date.now();
+    pingSansReponse = 0;
     if (serveurPerdu) { serveurPerdu = false; majScene(); }
   };
   s.onmessage = (e) => {
-    dernierMessage = Date.now();
+    pingSansReponse = 0;
     const m = JSON.parse(e.data);
     if (m.type === 'pong') pingServeur = Math.round(performance.now() - m.t);
     else if (m.type === 'etat') { etat = m; afficher(); majManette(); afficherJeuEnCours(); }

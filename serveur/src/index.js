@@ -15,7 +15,7 @@ import { Relais } from './relais.js';
 const SESSION_MS = 24 * 3600_000;
 const JETON_RELAIS_MS = 5 * 60_000;
 const JETON_RELAIS_HOTE_MS = 2 * 3600_000;  // l'agent le réutilise si le serveur ne répond plus
-const DELAI_AGENT_MS = 45_000;    // l'agent a ce temps pour revenir avant que la partie s'arrête
+const DELAI_AGENT_MS = 90_000;    // l'agent a ce temps pour revenir avant que la partie s'arrête (coupure de la box…)
 const DELAI_REPRISE_MS = 60_000;  // après un redémarrage du serveur : l'hôte a ce temps pour revenir dans sa salle
 const BATTEMENT_MS = 15_000;
 
@@ -122,8 +122,9 @@ setInterval(() => {
   // Un hôte parti depuis trop longtemps : la partie s'arrête, son agent aussi.
   const hotes = new Map([...salles.salles.values()].filter((s) => s.hote).map((s) => [s.id, s.hote]));
   for (const id of salles.tick()) {
+    // (pas un arrêt voulu : si l'hôte et son agent reviennent, la partie peut reprendre)
     const avant = hotes.get(id);
-    if (avant && salles.get(id)?.hote !== avant) arreterPartie(avant, id);
+    if (avant && salles.get(id)?.hote !== avant) commanderAgent(avant, id, false);
     diffuser(id);
     envoyerPlaces(id);
   }
@@ -152,7 +153,7 @@ const suivreVie = (ws) => {
 function nettoyerDiag(m) {
   const r = {};
   for (const [k, v] of Object.entries(m || {}).slice(0, 24)) {
-    if (!/^[a-zA-Z]{1,20}$/.test(k) || k === 'type') continue;
+    if (!/^[a-zA-Z][a-zA-Z0-9]{0,19}$/.test(k) || k === 'type') continue;
     if (typeof v === 'number' && Number.isFinite(v)) r[k] = Math.round(v * 10) / 10;
     else if (typeof v === 'boolean') r[k] = v;
     else if (typeof v === 'string') r[k] = v.slice(0, 160);
@@ -358,6 +359,18 @@ app.register(async (scope) => {
       let m;
       try { m = JSON.parse(raw); } catch { return; }
       // Après une reconnexion, l'agent dit quelle salle il héberge encore.
+      if (m?.type === 'heberge' && m.salle === '') {
+        // L'agent (redémarré) n'héberge rien : une reprise en attente n'a plus d'objet, et on relance les
+        // parties que le serveur croit en cours (avec leurs places et leurs exclusions).
+        reprises.delete(a.uid);
+        for (const s of salles.salles.values()) {
+          if (s.hote !== a.uid || arretees.get(a.uid) === s.id) continue;
+          app.log.info({ uid: a.uid, salle: court(s.id) }, 'agent redémarré : la partie est relancée');
+          commanderAgent(a.uid, s.id, true);
+          resynchroniser(a.uid, s.id);
+        }
+        return;
+      }
       if (m?.type === 'heberge' && typeof m.salle === 'string' && m.salle.length <= 64) {
         // Arrêtée pendant la coupure (« Arrêter », ou l'hôte est parti) : on le redit à l'agent.
         if (arretees.get(a.uid) === m.salle) return commanderAgent(a.uid, m.salle, false);
@@ -366,6 +379,7 @@ app.register(async (scope) => {
       }
       // La capture s'est arrêtée sur le PC de l'hôte : la partie s'arrête pour tout le monde.
       if (m?.type === 'fin' && typeof m.salle === 'string' && m.salle.length <= 64) {
+        if (reprises.get(a.uid)?.salle === m.salle) reprises.delete(a.uid);
         if (salles.get(m.salle)?.hote === a.uid) {
           salles.arreter(m.salle, a.uid);
           arretees.set(a.uid, m.salle);
@@ -409,7 +423,8 @@ app.register(async (scope) => {
         departsAgent.delete(a.uid);
         if (agents.enLigne(a.uid)) return;
         app.log.info({ uid: a.uid }, 'agent parti pour de bon : la partie s’arrête');
-        for (const id of salles.agentParti(a.uid)) { arretees.set(a.uid, id); diffuser(id); }
+        // Pas un arrêt voulu : si l'agent revient plus tard en hébergeant encore, la partie reprend.
+        for (const id of salles.agentParti(a.uid)) diffuser(id);
       }, DELAI_AGENT_MS));
     });
   });

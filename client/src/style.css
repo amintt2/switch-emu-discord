@@ -148,3 +148,7 @@ dialog.reglages tr.attente td { color: #f5c451; }
 .bouton-tactile.plus { left: calc(50% + 8px); }
 #scene:has(.tactile:not([hidden])) .boutons-scene { top: 8px; bottom: auto; right: 50%; transform: translateX(50%); }
 .jouer-avec input.volume { flex: 1; min-width: 0; accent-color: var(--accent-2); padding: 0; border: 0; background: none; }
+
+/* Bouton mis en avant (ex. : « Ouvrir dans le navigateur » quand Discord ne décode pas la vidéo) */
+.boutons-scene:has(.mis-en-avant) { opacity: 1; }
+button.mis-en-avant { background: var(--accent); color: #fff; font-size: 14px; padding: 9px 14px; }

@@ -38,7 +38,7 @@ export class Relais {
       if (s.hote && s.hote !== ws) s.hote.close(4000, 'remplacé par un autre hôte');
       s.hote = ws;
       // L'hôte (re)connecté reçoit l'état de chacun : qui, quelle couche, en direct ou non.
-      for (const [id, w] of s.amis) versHote({ type: 'arrivee', de: id, uid: w.uidRelais, q: w.couche, p: !!w.pause });
+      for (const [id, w] of s.amis) versHote({ type: 'arrivee', de: id, uid: w.uidRelais, q: w.couche, p: w.enDirect });
       ws.on('message', (d, binaire) => this.depuisHote(s, d, binaire, ws));
       ws.on('close', () => {
         if (s.hote !== ws) return;
@@ -50,8 +50,10 @@ export class Relais {
     }
     if (s.amis.size >= MAX_AMIS) return ws.close(4002, 'salle pleine');
     const id = s.suivant++;
+    // État de l'ami, rangé sur sa connexion (noms à nous : ws a déjà pause(), resume()…).
     ws.uidRelais = uid;
     ws.couche = 0;
+    ws.enDirect = false;
     s.amis.set(id, ws);
     versHote({ type: 'arrivee', de: id, uid });
     if (!s.hote) ws.send(JSON.stringify({ type: 'pas-d-hote' }));
@@ -67,7 +69,7 @@ export class Relais {
         ws.couche = m.q;
       }
       // L'ami reçoit la vidéo en direct (P2P) : on ne lui envoie plus d'images (le texte continue).
-      if (m.type === 'pause') ws.pause = m.p === true;
+      if (m.type === 'pause') ws.enDirect = m.p === true;
       m.de = id;
       m.uid = uid;  // l'hôte sait toujours qui parle : ce n'est pas l'ami qui le dit
       versHote(m);
@@ -84,7 +86,7 @@ export class Relais {
       const couche = a >= DEST_COUCHE ? a - DEST_COUCHE : -1;
       for (const [id, w] of s.amis) {
         if (couche >= 0 ? w.couche !== couche : a && a !== id) continue;
-        if (opts.binary && w.pause) continue;
+        if (opts.binary && w.enDirect) continue;
         if (w.readyState !== 1) continue;
         // Un ami qui ne suit pas : on jette plutôt que d'accumuler du retard.
         if (opts.binary && w.bufferedAmount > 2_000_000) continue;
