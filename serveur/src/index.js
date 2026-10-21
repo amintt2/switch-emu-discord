@@ -152,7 +152,7 @@ const suivreVie = (ws) => {
 function nettoyerDiag(m) {
   const r = {};
   for (const [k, v] of Object.entries(m || {}).slice(0, 24)) {
-    if (!/^[a-zA-Z]{1,20}$/.test(k) || k === 'type') continue;
+    if (!/^[a-zA-Z][a-zA-Z0-9]{0,19}$/.test(k) || k === 'type') continue;
     if (typeof v === 'number' && Number.isFinite(v)) r[k] = Math.round(v * 10) / 10;
     else if (typeof v === 'boolean') r[k] = v;
     else if (typeof v === 'string') r[k] = v.slice(0, 160);
@@ -358,6 +358,16 @@ app.register(async (scope) => {
       let m;
       try { m = JSON.parse(raw); } catch { return; }
       // Après une reconnexion, l'agent dit quelle salle il héberge encore.
+      if (m?.type === 'heberge' && m.salle === '') {
+        // L'agent (redémarré) n'héberge rien : on relance les parties que le serveur croit en cours.
+        for (const s of salles.salles.values()) {
+          if (s.hote !== a.uid || arretees.get(a.uid) === s.id) continue;
+          app.log.info({ uid: a.uid, salle: court(s.id) }, 'agent redémarré : la partie est relancée');
+          commanderAgent(a.uid, s.id, true);
+          envoyerPlaces(s.id);
+        }
+        return;
+      }
       if (m?.type === 'heberge' && typeof m.salle === 'string' && m.salle.length <= 64) {
         // Arrêtée pendant la coupure (« Arrêter », ou l'hôte est parti) : on le redit à l'agent.
         if (arretees.get(a.uid) === m.salle) return commanderAgent(a.uid, m.salle, false);

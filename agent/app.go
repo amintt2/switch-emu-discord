@@ -440,9 +440,10 @@ func (a *Agent) session(ctx, partieCtx context.Context, cfg Config) error {
 			}
 			envoyer(map[string]any{"type": "jeux", "jeux": jeux})
 			envoyer(map[string]any{"type": "jeu-en-cours", "jeu": actuel})
+			// Toujours dire ce qu'on héberge : après un redémarrage de l'agent (mise à jour, plantage),
+			// le serveur relance la partie qu'il croyait en cours.
+			envoyer(map[string]any{"type": "heberge", "salle": salle})
 			if salle != "" {
-				// Reconnexion pendant une partie : le serveur reprend là où on en était.
-				envoyer(map[string]any{"type": "heberge", "salle": salle})
 				if p := a.partie(); p != nil {
 					envoyer(map[string]any{"type": "manettes", "salle": salle, "places": p.placesBranchees()})
 				}
