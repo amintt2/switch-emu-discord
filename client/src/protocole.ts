@@ -1,9 +1,10 @@
-// Images reçues du relais : [u8 drapeaux (bit0 = clé)][u8 qualité][f64 heure de l'hôte en ms][Annex B]
+// Images reçues du relais : [u8 drapeaux (bit0 = clé, bit1 = son)][u8 qualité][f64 heure de l'hôte en ms][Annex B]
 // (même format que agent/protocole.go, sans les 4 octets de destinataire retirés par le relais).
 export const ENTETE = 10;
 
 export interface Image {
   cle: boolean;
+  son: boolean;       // paquet de son (PCM) et pas une image
   qualite: number;
   heureHote: number;
   donnees: Uint8Array;
@@ -14,6 +15,7 @@ export function lireImage(buf: ArrayBuffer): Image | null {
   const v = new DataView(buf);
   return {
     cle: (v.getUint8(0) & 1) === 1,
+    son: (v.getUint8(0) & 2) === 2,
     qualite: v.getUint8(1),
     heureHote: v.getFloat64(2, true),
     donnees: new Uint8Array(buf, ENTETE),

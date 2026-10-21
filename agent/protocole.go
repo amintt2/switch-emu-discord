@@ -16,8 +16,7 @@ import (
 const (
 	enteteImage    = 4 + 1 + 1 + 8
 	drapeauCle     = 1
-	qualiteParDef  = 0 // une seule qualité à l'étape 1 ; l'étape 5 en ajoutera d'autres
-	tailleMaxTexte = 4096
+	tailleMaxTexte = 16384 // une offre WebRTC avec ses candidats tient largement
 )
 
 func heureMs(t time.Time) float64 { return float64(t.UnixNano()) / 1e6 }
@@ -41,6 +40,9 @@ type messageAmi struct {
 	De   uint32  `json:"de"`
 	UID  string  `json:"uid"`
 	T    float64 `json:"t"`
+	Q    int     `json:"q"`   // "qualite" : couche vidéo choisie (0 = 1080p, 1 = 720p)
+	P    bool    `json:"p"`   // "pause" : l'ami reçoit la vidéo en direct (P2P), le relais ne lui envoie plus d'images
+	SDP  string  `json:"sdp"` // "offre" : offre WebRTC de l'ami (connexion directe)
 }
 
 var errMessage = errors.New("message invalide")

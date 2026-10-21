@@ -3,6 +3,8 @@ import { api, getSession, wsUrl, type Utilisateur } from './api.ts';
 import { dansDiscord, seConnecter, type Identite } from './auth.ts';
 import { Lecteur, type Etat, type Flux, type Mesures } from './lecteur.ts';
 import { PanneauDebug } from './debug.ts';
+import { appareilTactile, ManetteTactile } from './tactile.ts';
+import { Son } from './son.ts';
 import { EnvoiManette } from './envoi.ts';
 import { nomTouche, ouvrirReglages } from './ecranReglages.ts';
 import { charger, enregistrer, type Entree, type Reglages } from './reglages.ts';
@@ -38,6 +40,9 @@ let connecteDepuis = 0;      // dernière (re)connexion à la salle
 let arretPrevu = 0;           // minuteur : la vidéo s'arrête si la partie ne reprend pas
 let placeAvant = 0;           // ma place, pour la reprendre après un redémarrage du serveur
 const debug = new PanneauDebug();
+const tactile = new ManetteTactile();
+const son = new Son();
+son.definirVolume(reglages.volume ?? 0.8);
 
 function toast(texte: string) {
   const t = $('toast');
@@ -262,7 +267,7 @@ function demarrerLecteur(flux: Flux) {
   lecteur = new Lecteur(
     canvas,
     dansDiscord(),
-    (e, detail) => { etatLecteur = { e, detail }; majScene(); },
+    (e, detail) => { etatLecteur = { e, detail }; majScene(); majTactile(); },
     (m) => { derniereMesure = m; afficherStats(m); },
     () => new Promise<Flux>((resolve, reject) => {
       attenteJeton = resolve;
@@ -270,11 +275,15 @@ function demarrerLecteur(flux: Flux) {
       setTimeout(() => reject(new Error('pas de jeton')), 4000);
     }),
     envoyerDiag,
+    reglages.qualite ?? 'auto',
   );
   envoyerDiag('lecteur', { discord: dansDiscord(), webcodecs: typeof VideoDecoder !== 'undefined', ecran: `${screen.width}x${screen.height}`, dpr: devicePixelRatio });
   lecteur.surManetteIndisponible = (raison) => { manetteIndisponible = raison; majManette(); };
+  lecteur.surVibration = vibrer;
+  lecteur.surSon = (pcm) => son.jouer(pcm);
   envoiManette = new EnvoiManette((m) => lecteur?.envoyerCommande(m), () => reglages, () => majManette());
   envoiManette.peutJouer = jeJoueIci;
+  envoiManette.sourceExtra = () => tactile.etat();
   // Un spectateur touche sa manette : on lui donne la première place libre (sauf s'il a choisi de regarder).
   envoiManette.surEnvieDeJouer = () => {
     if (spectateurVoulu || !etat) return;
@@ -284,7 +293,20 @@ function demarrerLecteur(flux: Flux) {
   };
   envoiManette.demarrer();
   lecteur.demarrer(flux);
+  majTactile();
   afficher();
+}
+
+/** Vibrations du jeu : sur les manettes branchées à cet appareil, ou le téléphone avec la manette tactile. */
+function vibrer(fort: number, faible: number) {
+  for (const g of navigator.getGamepads?.() ?? []) {
+    const a = (g as (Gamepad & { vibrationActuator?: { playEffect?: Function; reset?: Function } }) | null)?.vibrationActuator;
+    if (!a?.playEffect) continue;
+    // 2 s au plus : si l'arrêt se perd en route, la manette s'arrête d'elle-même.
+    if (fort || faible) a.playEffect('dual-rumble', { startDelay: 0, duration: 2000, strongMagnitude: fort, weakMagnitude: faible }).catch(() => {});
+    else a.reset?.()?.catch?.(() => {});
+  }
+  if (tactile.visible) navigator.vibrate?.(fort || faible ? 2000 : 0);
 }
 
 function arreterLecteur() {
@@ -294,6 +316,7 @@ function arreterLecteur() {
   lecteur?.arreter();
   lecteur = null;
   derniereMesure = null;
+  majTactile();
   $('stats').hidden = true;
 }
 
@@ -332,6 +355,23 @@ function remplirManette(d: HTMLElement) {
     choix.append(el('option', { value: v, textContent: t, selected: (reglages.entree ?? 'tout') === v }));
   }
   enfants.push(el('label', { className: 'jouer-avec' }, 'Jouer avec ', choix));
+
+  // Qualité vidéo : automatique selon la connexion (la fluidité d'abord), ou forcée.
+  const qualite = el('select', { onchange: () => {
+    reglages = { ...reglages, qualite: qualite.value as 'auto' | '1080' | '720' };
+    enregistrer(reglages);
+    lecteur?.definirQualite(reglages.qualite!);
+  } });
+  for (const [v, t] of [['auto', 'Auto (selon ta connexion)'], ['1080', '1080p'], ['720', '720p (connexion faible)']] as const) {
+    qualite.append(el('option', { value: v, textContent: t, selected: (reglages.qualite ?? 'auto') === v }));
+  }
+  enfants.push(el('label', { className: 'jouer-avec' }, 'Qualité ', qualite));
+
+  // Volume du son du jeu (sur cet appareil seulement).
+  const volume = el('input', { type: 'range', min: '0', max: '100', value: String(Math.round((reglages.volume ?? 0.8) * 100)), className: 'volume' });
+  volume.oninput = () => son.definirVolume(Number(volume.value) / 100);
+  volume.onchange = () => { reglages = { ...reglages, volume: Number(volume.value) / 100 }; enregistrer(reglages); };
+  enfants.push(el('label', { className: 'jouer-avec' }, 'Son du jeu ', volume));
 
   if (reglages.entree !== 'manette') {
     const k = (s: Parameters<typeof nomTouche>[0]) => el('kbd', { textContent: nomTouche(s) });
@@ -412,12 +452,31 @@ function connecterSalle(essai = 0) {
   };
 }
 
+/** Manette tactile : sur téléphone et tablette, pendant qu'on regarde (affichée par défaut). */
+function majTactile() {
+  const b = $('bouton-tactile');
+  b.hidden = !appareilTactile() || !lecteur;
+  let voulue = true;
+  try { voulue = localStorage.getItem('switch-emu.tactile') !== 'non'; } catch { /* stockage indisponible */ }
+  tactile.visible = !b.hidden && voulue && etatLecteur.e === 'lecture';
+  b.classList.toggle('actif', tactile.visible);
+}
+
 // Menu debug, résumé envoyé au journal du serveur, bouton « Agrandir »
-$('scene').append(debug.racine);
+$('scene').append(debug.racine, tactile.racine);
+$('bouton-tactile').onclick = () => {
+  try { localStorage.setItem('switch-emu.tactile', tactile.visible ? 'non' : 'oui'); } catch { /* idem */ }
+  majTactile();
+};
 $('bouton-debug').onclick = () => ouvrirDebug(!debug.ouvert);
 $('stats').onclick = () => ouvrirDebug(!debug.ouvert);
 try { if (localStorage.getItem('switch-emu.debug')) ouvrirDebug(true); } catch { /* stockage indisponible */ }
-setInterval(() => debug.maj(derniereMesure, pingServeur), 1000);
+setInterval(() => {
+  debug.son = !lecteur ? '…' : son.bloque ? 'en attente d’un clic' : son.recus ? `${son.avanceMs} ms d’avance` : 'aucun (pas de jeu lancé ?)';
+  $('bouton-son').hidden = !son.bloque;
+  debug.maj(derniereMesure, pingServeur);
+}, 1000);
+$('bouton-son').onclick = () => son.debloquer();
 setInterval(() => {
   const m = derniereMesure;
   if (m) envoyerDiag('resume', { ips: m.ips, image: m.image ?? -1, pingPc: m.pingPc ?? -1, pingServeur: pingServeur ?? -1, debit: m.debit, relais: m.relais, jetees: m.jetees, reco: m.reconnexions, codec: m.codec, decodeur: m.decodeur, taille: `${m.largeur}x${m.hauteur}` });

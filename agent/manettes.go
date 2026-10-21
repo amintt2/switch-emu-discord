@@ -38,6 +38,11 @@ type padVirtuel interface {
 	Unplug() error
 }
 
+// vibreur : une manette qui dit quand le jeu la fait vibrer (ViGEm).
+type vibreur interface {
+	Vibrations(f func(fort, faible uint8))
+}
+
 type busManettes interface {
 	brancher(place int) (padVirtuel, error)
 }
@@ -106,8 +111,10 @@ type manettes struct {
 	pads   [nbPlaces + 1]padVirtuel
 	etats  [nbPlaces + 1]etatPlace
 	places map[string]int // uid -> place (joueurs à distance)
-	refus  map[string]bool
-	now    func() time.Time
+	// surVibration : le jeu fait vibrer la manette d'une place (moteurs fort et faible, 0-255).
+	surVibration func(place int, fort, faible uint8)
+	refus        map[string]bool
+	now          func() time.Time
 }
 
 func nouvellesManettes(bus busManettes) *manettes {
@@ -124,6 +131,10 @@ func (m *manettes) brancherPlace(p int) error {
 	}
 	m.pads[p] = pad
 	log.Printf("manette virtuelle de J%d branchée", p)
+	if v, ok := pad.(vibreur); ok && m.surVibration != nil {
+		f := m.surVibration
+		go v.Vibrations(func(fort, faible uint8) { f(p, fort, faible) })
+	}
 	return nil
 }
 
@@ -189,6 +200,18 @@ func (m *manettes) definirPlaces(nouvelles map[string]int) {
 		}
 	}
 	m.places = propres
+}
+
+// occupant renvoie le joueur à distance assis à la place p ("" si personne).
+func (m *manettes) occupant(p int) string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for uid, q := range m.places {
+		if q == p {
+			return uid
+		}
+	}
+	return ""
 }
 
 // place renvoie la place (1 à 4) d'un joueur à distance, ou 0 pour un spectateur.

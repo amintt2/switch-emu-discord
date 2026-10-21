@@ -19,3 +19,9 @@ target_link_libraries(capteur PRIVATE avcodec avutil d3d11 dxgi winmm)
 # Copie à côté de l'exécutable les seules DLL FFmpeg utilisées
 set(FFMPEG_DLLS "${FFMPEG_DIR}/bin/avcodec-62.dll" "${FFMPEG_DIR}/bin/avutil-60.dll" "${FFMPEG_DIR}/bin/swresample-6.dll")
 add_custom_command(TARGET capteur POST_BUILD COMMAND ${CMAKE_COMMAND} -E copy_if_different ${FFMPEG_DLLS} $<TARGET_FILE_DIR:capteur>)
+
+# son.exe : capture du son de Ryubing seul (API Windows uniquement, pas de FFmpeg)
+add_executable(son son.cpp)
+target_compile_definitions(son PRIVATE UNICODE _UNICODE NOMINMAX WIN32_LEAN_AND_MEAN)
+target_compile_options(son PRIVATE /utf-8 /W3 /EHsc)
+target_link_libraries(son PRIVATE ole32 mmdevapi)

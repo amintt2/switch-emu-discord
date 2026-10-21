@@ -125,3 +125,26 @@ dialog.reglages tr.attente td { color: #f5c451; }
 }
 .badge.pret { background: color-mix(in srgb, var(--ok) 20%, transparent); color: #a8f0d0; margin-left: 0; }
 #places .badge.pret + button { margin-left: 4px; }
+
+/* Manette tactile, par-dessus la vidéo */
+.tactile { position: absolute; inset: 0; pointer-events: none; touch-action: none; user-select: none; -webkit-user-select: none; }
+.tactile[hidden] { display: none; }
+.tactile > * { pointer-events: auto; position: absolute; }
+.tactile .stick { left: 4%; bottom: 8%; width: min(30vmin, 150px); aspect-ratio: 1; border-radius: 50%; background: rgba(255, 255, 255, .08); border: 2px solid rgba(255, 255, 255, .25); display: grid; place-items: center; touch-action: none; }
+.tactile .manche { width: 42%; aspect-ratio: 1; border-radius: 50%; background: rgba(255, 255, 255, .35); pointer-events: none; }
+.bouton-tactile { width: min(12vmin, 58px); aspect-ratio: 1; padding: 0; border-radius: 50%; background: rgba(255, 255, 255, .14); border: 2px solid rgba(255, 255, 255, .3); color: rgba(255, 255, 255, .85); font-size: 15px; font-weight: 800; touch-action: none; }
+.bouton-tactile.appuye { background: rgba(255, 255, 255, .42); }
+.bouton-tactile.a { right: 3%; bottom: calc(8% + min(12vmin, 58px)); }
+.bouton-tactile.b { right: calc(3% + min(12vmin, 58px)); bottom: 8%; }
+.bouton-tactile.x { right: calc(3% + min(12vmin, 58px)); bottom: calc(8% + 2 * min(12vmin, 58px)); }
+.bouton-tactile.y { right: calc(3% + 2 * min(12vmin, 58px)); bottom: calc(8% + min(12vmin, 58px)); }
+.bouton-tactile.l, .bouton-tactile.zl, .bouton-tactile.r, .bouton-tactile.zr { border-radius: 12px; width: min(15vmin, 72px); aspect-ratio: 2 / 1; font-size: 13px; }
+.bouton-tactile.zl { left: 3%; top: 6%; }
+.bouton-tactile.l { left: calc(4% + min(15vmin, 72px)); top: 6%; }
+.bouton-tactile.zr { right: 3%; top: 6%; }
+.bouton-tactile.r { right: calc(4% + min(15vmin, 72px)); top: 6%; }
+.bouton-tactile.moins, .bouton-tactile.plus { width: min(9vmin, 40px); bottom: 6%; font-size: 18px; }
+.bouton-tactile.moins { left: calc(50% - min(9vmin, 40px) - 8px); }
+.bouton-tactile.plus { left: calc(50% + 8px); }
+#scene:has(.tactile:not([hidden])) .boutons-scene { top: 8px; bottom: auto; right: 50%; transform: translateX(50%); }
+.jouer-avec input.volume { flex: 1; min-width: 0; accent-color: var(--accent-2); padding: 0; border: 0; background: none; }

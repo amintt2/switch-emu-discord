@@ -19,6 +19,10 @@ export type Entree = 'tout' | 'manette' | 'clavier';
 export interface Reglages {
   version: 2;
   entree?: Entree;
+  /** Qualité vidéo : automatique (selon la connexion), ou forcée. */
+  qualite?: 'auto' | '1080' | '720';
+  /** Volume du son du jeu, de 0 à 1. */
+  volume?: number;
   /** commande -> event.code (position physique de la touche) */
   clavier: Partial<Record<Sortie, string>>;
   /** "standard" (toutes les manettes reconnues) ou identifiant d'un modèle -> profil */
@@ -68,6 +72,8 @@ export function nettoyer(brut: unknown): Reglages {
   if (!brut || typeof brut !== 'object' || (brut as Reglages).version !== 2) return r;
   const b = brut as Reglages;
   if (b.entree === 'manette' || b.entree === 'clavier' || b.entree === 'tout') r.entree = b.entree;
+  if (b.qualite === 'auto' || b.qualite === '1080' || b.qualite === '720') r.qualite = b.qualite;
+  if (typeof b.volume === 'number' && b.volume >= 0 && b.volume <= 1) r.volume = b.volume;
   if (b.clavier && typeof b.clavier === 'object') {
     r.clavier = {};
     for (const s of SORTIES) if (typeof b.clavier[s] === 'string' && TOUCHE.test(b.clavier[s]!)) r.clavier[s] = b.clavier[s];

@@ -57,6 +57,7 @@ jobs:
         shell: pwsh
         run: |
           Copy-Item capteur\build\capteur.exe paquet\
+          Copy-Item capteur\build\son.exe paquet\
           foreach ($d in 'avcodec-62', 'avutil-60', 'swresample-6') { Copy-Item "capteur\build\$d.dll" paquet\ }
           Copy-Item LICENSE paquet\LICENSE.txt
           Compress-Archive -Path paquet\* -DestinationPath SwitchEMU-agent.zip

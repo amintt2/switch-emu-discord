@@ -100,3 +100,42 @@ test('battements : le relais répond lui-même, sans rien transmettre', () => {
   assert.deepEqual(ami.recus, [{ type: 'battement' }]);
   assert.deepEqual(hote.recus.slice(avant), [{ type: 'battement' }]);
 });
+
+test('couches : chaque ami reçoit la qualité qu’il a choisie', () => {
+  const { entrer } = fabrique();
+  const hote = entrer('hote', 'h');
+  const a = entrer('ami', 'a');
+  const b = entrer('ami', 'b');
+  b.texte({ type: 'qualite', q: 1 });
+  b.texte({ type: 'qualite', q: 7 });  // couche inconnue : ignoré
+  assert.deepEqual(hote.recus.at(-1), { type: 'qualite', q: 1, de: 2, uid: 'b' });
+  const image = (dest, txt) => { const p = Buffer.alloc(8); p.writeUInt32LE(dest, 0); p.write(txt, 4); return p; };
+  hote.binaire(image(0xFFFFFF00, 'hd!!'));
+  hote.binaire(image(0xFFFFFF01, 'sd!!'));
+  assert.deepEqual(a.recus.map(String), ['hd!!']);
+  assert.deepEqual(b.recus.map(String), ['sd!!']);
+});
+
+test('pause : un ami en direct (P2P) ne reçoit plus les images, mais toujours les messages', () => {
+  const { entrer } = fabrique();
+  const hote = entrer('hote', 'h');
+  const a = entrer('ami', 'a');
+  a.texte({ type: 'pause', p: true });
+  assert.deepEqual(hote.recus.at(-1), { type: 'pause', p: true, de: 1, uid: 'a' });
+  const image = Buffer.alloc(8); image.writeUInt32LE(0, 0); image.write('vid!', 4);
+  hote.binaire(image);
+  hote.texte({ type: 'reponse', a: 1, sdp: 'v=0' });
+  assert.deepEqual(a.recus, [{ type: 'reponse', sdp: 'v=0' }]);
+  a.texte({ type: 'pause', p: false });
+  hote.binaire(image);
+  assert.equal(String(a.recus.at(-1)), 'vid!');
+});
+
+test('l’hôte qui se reconnecte retrouve l’état de chacun (qui, quelle couche, en direct ou non)', () => {
+  const { entrer } = fabrique();
+  const a = entrer('ami', 'a');
+  a.texte({ type: 'qualite', q: 1 });
+  a.texte({ type: 'pause', p: true });
+  const hote = entrer('hote', 'h');
+  assert.deepEqual(hote.recus[0], { type: 'arrivee', de: 1, uid: 'a', q: 1, p: true });
+});
