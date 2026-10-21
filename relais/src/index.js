@@ -11,7 +11,7 @@ const MAX_TEXTE = 16384;  // une offre WebRTC (connexion directe) avec ses candi
 const TYPES_AMI = new Set(['ping', 'idr', 'qualite', 'manette', 'pause', 'offre']);
 const BATTEMENT = JSON.stringify({ type: 'battement' });
 const DEST_COUCHE = 0xFFFFFF00;  // + q : les amis qui regardent la couche vidéo q (0 = 1080p, 1 = 720p)
-const NB_COUCHES = 2;
+const NB_COUCHES = 3;  // 1080p, 720p, VP8 (lecteurs sans H.264)
 
 export class Salle {
   constructor(state) {

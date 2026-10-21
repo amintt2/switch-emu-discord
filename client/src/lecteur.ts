@@ -5,7 +5,7 @@
 // Stabilité : battements avec le relais (une connexion morte est repérée en quelques secondes),
 // reconnexion immédiate, image clé redemandée tant qu'elle n'arrive pas, décodeur logiciel en repli.
 import { codecDepuisSPS, Horloge, lireImage } from './protocole.ts';
-import { Adaptation, BASSE, type Choix } from './qualite.ts';
+import { Adaptation, BASSE, COMPAT, type Choix } from './qualite.ts';
 import { Direct } from './direct.ts';
 
 export interface Relais { nom: string; discord: string; web: string }
@@ -92,6 +92,21 @@ export class Lecteur {
   private adaptation: Adaptation;
   private changementCouche = 0;
   private hoteSansCouches = false;  // agent ancien : une seule qualité, pas d'adaptation
+  private compat = false;           // pas de H.264 ici : couche VP8, sans adaptation
+  private codecs: Record<string, boolean> = {};
+
+  /** Couche vidéo voulue : la VP8 si le H.264 manque, sinon celle de l'adaptation. */
+  private get couche() { return this.compat ? COMPAT : this.adaptation.couche; }
+
+  /** Le H.264 ne passe pas ici : on demande la couche VP8 (720p, encodée par le PC de l'hôte). */
+  private passerCompat(raison: string) {
+    if (this.compat) return;
+    this.compat = true;
+    this.erreursDecodeur = 0;
+    this.logiciel = false;
+    this.diag('compat', { raison });
+    this.changerCouche();
+  }
   private direct: Direct | null = null;
   private prochainDirect = 0;
   private attenteDirect = 30_000;
@@ -104,18 +119,31 @@ export class Lecteur {
     private surMesures: (m: Mesures) => void,
     private demanderJeton: () => Promise<Flux>,
     private diag: Diag = () => {},
-    choix: Choix = 'auto',
+    choix: Choix | 'compat' = 'auto',
   ) {
     this.ctx = canvas.getContext('2d', { alpha: false, desynchronized: true })!;
-    this.adaptation = new Adaptation(choix);
+    this.adaptation = new Adaptation(choix === 'compat' ? 'auto' : choix);
+    this.compatChoisie = choix === 'compat';
   }
 
-  /** Qualité vidéo : automatique ou forcée (1080p / 720p). */
-  definirQualite(choix: Choix) {
+  private compatChoisie = false;  // la personne a choisi « Compatibilité » (sinon : imposée faute de H.264)
+
+  /** Qualité vidéo : automatique, forcée (1080p / 720p), ou compatibilité (VP8). */
+  definirQualite(choix: Choix | 'compat') {
     if (this.hoteSansCouches) return;
-    const avant = this.adaptation.couche;
+    if (choix === 'compat') {
+      this.compatChoisie = true;
+      if (this.codecs.vp8 !== false) this.passerCompat('choisie');
+      return;
+    }
+    const avant = this.couche;
+    if (this.compat) {
+      if (!this.compatChoisie || !(this.codecs.avc1080 || this.codecs.avc720)) return;  // imposée : pas de H.264 ici
+      this.compat = false;
+    }
+    this.compatChoisie = false;
     this.adaptation.definir(choix);
-    if (this.adaptation.couche !== avant) this.changerCouche();
+    if (this.couche !== avant) this.changerCouche();
   }
 
   /** On passe sur l'autre couche : le relais nous l'envoie, on repart de sa prochaine image clé. */
@@ -123,8 +151,8 @@ export class Lecteur {
     this.changementCouche = Date.now();
     this.attendreCle = true;
     this.codec = '';
-    this.envoyer({ type: 'qualite', q: this.adaptation.couche });
-    this.diag('qualite', { q: this.adaptation.couche, choix: this.adaptation.choix });
+    this.envoyer({ type: 'qualite', q: this.couche });
+    this.diag('qualite', { q: this.couche, choix: this.compat ? 'compat' : this.adaptation.choix });
   }
 
   async demarrer(flux: Flux) {
@@ -135,14 +163,22 @@ export class Lecteur {
       return;
     }
     // Le H.264 manque parfois (certains Discord) : on le dit tout de suite, avec la solution.
-    const codecs = await codecsSupportes();
+    const codecs = this.codecs = await codecsSupportes();
     this.diag('codecs', codecs);
     if (this.ferme) return;
     if (!codecs.avc1080 && !codecs.avc720) {
-      this.surEtat('erreur', this.dansDiscord
-        ? 'Ton Discord ne sait pas décoder la vidéo (H.264). Clique « Ouvrir dans le navigateur » en bas de l’écran : dans Chrome ou Edge, ça marche.'
-        : 'Ce navigateur ne sait pas décoder la vidéo (H.264). Essaie Chrome ou Edge à jour.');
-      return;
+      // Pas de H.264 : la couche VP8 (720p) si ce lecteur la sait lire, sinon on explique quoi faire.
+      if (!codecs.vp8) {
+        this.surEtat('erreur', this.dansDiscord
+          ? 'Ton Discord ne sait pas décoder la vidéo. Clique « Ouvrir dans le navigateur » en bas de l’écran : dans Chrome ou Edge, ça marche.'
+          : 'Ce navigateur ne sait pas décoder la vidéo. Essaie Chrome ou Edge à jour.');
+        return;
+      }
+      this.compat = true;
+      this.compatChoisie = false;
+      this.diag('compat', { raison: 'pas de H.264' });
+    } else if (this.compatChoisie && codecs.vp8) {
+      this.compat = true;
     }
     let echecs = 0;
     while (!this.ferme) {
@@ -203,7 +239,7 @@ export class Lecteur {
         this.battementSansReponse = 0;
         this.surEtat('attente-image');
         this.changementCouche = Date.now();
-        if (this.adaptation.couche !== 0) this.envoyer({ type: 'qualite', q: this.adaptation.couche });
+        if (this.couche !== 0) this.envoyer({ type: 'qualite', q: this.couche });
         this.demanderCle();
         this.timers.push(
           window.setInterval(() => {
@@ -285,7 +321,7 @@ export class Lecteur {
       this.envoyerRelais({ type: 'pause', p: true });
       this.attendreCle = true;
       this.codec = '';
-      this.envoyer({ type: 'qualite', q: this.adaptation.couche });
+      this.envoyer({ type: 'qualite', q: this.couche });
       this.demanderCle();
       this.attenteDirect = 30_000;
       this.diag('direct', { ouvert: true });
@@ -296,7 +332,7 @@ export class Lecteur {
       this.pingDirectSansReponse = 0;
       if (etaitOuvert) {
         // Retour immédiat par le relais, sur la couche choisie entre-temps.
-        this.envoyerRelais({ type: 'qualite', q: this.adaptation.couche });
+        this.envoyerRelais({ type: 'qualite', q: this.couche });
         this.envoyerRelais({ type: 'pause', p: false });
         this.attendreCle = true;
         this.codec = '';
@@ -346,10 +382,14 @@ export class Lecteur {
     this.hotePresent = true;
     this.octets += buf.byteLength;
     if (img.son) { this.surSon(img.donnees); return; }
-    if (img.qualite !== this.adaptation.couche) {
+    if (img.qualite !== this.couche) {
       if (Date.now() - this.changementCouche < 3000) return;  // image de l'autre couche, juste après un changement
       // Toujours l'autre couche : le PC de l'hôte n'en a qu'une (agent pas encore à jour). On la prend.
       this.hoteSansCouches = true;
+      if (this.compat) {
+        this.surEtat('erreur', 'Le PC de l’hôte n’envoie pas encore la vidéo compatible avec ton lecteur : il doit mettre son agent à jour. En attendant, « Ouvrir dans le navigateur ».');
+        return;
+      }
       this.adaptation.definir(img.qualite === BASSE ? '720' : '1080');
       this.attendreCle = !img.cle;
       this.codec = '';
@@ -357,7 +397,7 @@ export class Lecteur {
     if (img.cle) this.cles++;
     if (this.attendreCle && !img.cle) return;
     if (img.cle) {
-      const codec = codecDepuisSPS(img.donnees);
+      const codec = img.qualite === COMPAT ? 'vp8' : codecDepuisSPS(img.donnees);
       if (codec && (codec !== this.codec || !this.decodeur || this.decodeur.state === 'closed')) this.configurer(codec);
     }
     const d = this.decodeur;
@@ -410,6 +450,11 @@ export class Lecteur {
     const message = e instanceof Error ? `${e.name}: ${e.message}` : String(e);
     this.diag('erreur-decodeur', { message, codec: this.codec, logiciel: this.logiciel, n: this.erreursDecodeur });
     if (this.erreursDecodeur >= 2 && !this.logiciel) this.logiciel = true;  // le décodeur matériel n'y arrive pas
+    // Le H.264 échoue sans cesse mais le VP8 passe : on bascule sur la couche VP8.
+    if (this.erreursDecodeur >= 4 && !this.compat && !this.hoteSansCouches && this.codecs.vp8) {
+      this.passerCompat(message);
+      return;
+    }
     if (this.erreursDecodeur >= 6) this.surEtat('erreur', this.dansDiscord
       ? `Ton Discord ne décode pas cette vidéo (${this.codec}). Clique « Ouvrir dans le navigateur » en bas de l’écran.`
       : `Ce navigateur ne décode pas cette vidéo (${this.codec}). Essaie Chrome ou Edge à jour.`);
@@ -423,7 +468,7 @@ export class Lecteur {
     const ping = this.horloge.allerRetour.at(-1);
     const image = r.length && this.horloge.allerRetour.length ? Math.max(0, Math.round(r[Math.floor(r.length / 2)])) : null;
     // Qualité adaptative : seulement quand l'image arrive (pas pendant une attente ou une reconnexion).
-    if (this.enLecture && this.hotePresent && !this.hoteSansCouches) {
+    if (this.enLecture && this.hotePresent && !this.hoteSansCouches && !this.compat) {
       const avant = this.adaptation.couche;
       if (this.adaptation.seconde({ image, jetees: this.jetees, ips: this.images }) !== avant) this.changerCouche();
     }
@@ -441,7 +486,8 @@ export class Lecteur {
       cles: this.cles,
       reconnexions: this.reconnexions,
       file: this.decodeur?.decodeQueueSize ?? 0,
-      qualite: `${this.adaptation.couche === BASSE ? '720p' : '1080p'} (${this.hoteSansCouches ? 'seule qualité du PC de l’hôte' : this.adaptation.choix === 'auto' ? 'auto' : 'choisie'})`,
+      qualite: this.compat ? '720p VP8 (compatibilité)'
+        : `${this.adaptation.couche === BASSE ? '720p' : '1080p'} (${this.hoteSansCouches ? 'seule qualité du PC de l’hôte' : this.adaptation.choix === 'auto' ? 'auto' : 'choisie'})`,
     });
     this.images = this.octets = this.jetees = this.cles = 0;
     this.retards = this.retards.slice(-60);

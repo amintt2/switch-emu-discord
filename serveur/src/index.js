@@ -8,16 +8,17 @@ import fastifyWebsocket from '@fastify/websocket';
 import { assertConfig, config, listeRelais, salleDepuisInstance } from './config.js';
 import { signer, verifier } from './jetons.js';
 import { exchangeCode, fetchUser } from './discord.js';
-import { Salles } from './salles.js';
+import { ECHELLE_DELAIS, Salles } from './salles.js';
 import { Agents, normaliserCode } from './agents.js';
 import { Relais } from './relais.js';
 
 const SESSION_MS = 24 * 3600_000;
 const JETON_RELAIS_MS = 5 * 60_000;
 const JETON_RELAIS_HOTE_MS = 2 * 3600_000;  // l'agent le réutilise si le serveur ne répond plus
-const DELAI_AGENT_MS = 90_000;    // l'agent a ce temps pour revenir avant que la partie s'arrête (coupure de la box…)
-const DELAI_REPRISE_MS = 60_000;  // après un redémarrage du serveur : l'hôte a ce temps pour revenir dans sa salle
-const BATTEMENT_MS = 15_000;
+const DELAI_AGENT_MS = 90_000 * ECHELLE_DELAIS;    // l'agent a ce temps pour revenir avant que la partie s'arrête (coupure de la box…)
+const DELAI_REPRISE_MS = 60_000 * ECHELLE_DELAIS;  // après un redémarrage du serveur : l'hôte a ce temps pour revenir dans sa salle
+const BATTEMENT_MS = 15_000 * ECHELLE_DELAIS;
+const TICK_MS = Math.max(100, 2000 * ECHELLE_DELAIS);
 
 const app = Fastify({
   logger: { level: process.env.LOG_LEVEL || 'info' },
@@ -132,7 +133,7 @@ setInterval(() => {
     if (reprendre(uid, r.salle)) reprises.delete(uid);
     else if (Date.now() > r.jusqua) { reprises.delete(uid); commanderAgent(uid, r.salle, false); }
   }
-}, 2000).unref();
+}, TICK_MS).unref();
 
 // Battements : une connexion qui ne répond plus est fermée (et l'autre côté se reconnecte).
 // Les pings applicatifs des pages gardent aussi la connexion active à travers le proxy de Discord.

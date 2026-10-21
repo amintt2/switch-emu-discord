@@ -401,15 +401,20 @@ func (h *hebergement) tourner(ctx context.Context, o ordreServeur, cfg Config, d
 		case p := <-finDirect:
 			delete(directs, p)
 		case <-diff.besoin:
-			if regardee(coucheBasse) > 0 {
-				diff.couches[coucheBasse].demarrer(ctx, sortie, func() { log.Printf("couche 720p abandonnée") })
+			for q := coucheBasse; q < nbCouches; q++ {
+				if regardee(q) > 0 {
+					diff.couches[q].demarrer(ctx, sortie, func() { log.Printf("couche %d abandonnée", q) })
+				}
 			}
 		case <-entretien.C:
-			// La couche basse ne tourne que si quelqu'un la regarde.
-			b := diff.couches[coucheBasse]
-			if b.enMarche() {
+			// Les couches 720p et VP8 ne tournent que si quelqu'un les regarde.
+			for q := coucheBasse; q < nbCouches; q++ {
+				b := diff.couches[q]
+				if !b.enMarche() {
+					continue
+				}
 				b.mu.Lock()
-				if regardee(coucheBasse) > 0 {
+				if regardee(q) > 0 {
 					b.inutile = time.Time{}
 				} else if b.inutile.IsZero() {
 					b.inutile = time.Now()
@@ -417,7 +422,7 @@ func (h *hebergement) tourner(ctx context.Context, o ordreServeur, cfg Config, d
 				arreter := !b.inutile.IsZero() && time.Since(b.inutile) > arretBasseApres
 				b.mu.Unlock()
 				if arreter {
-					log.Printf("couche 720p : plus personne ne la regarde, arrêt")
+					log.Printf("couche %d : plus personne ne la regarde, arrêt", q)
 					b.arreter()
 				}
 			}

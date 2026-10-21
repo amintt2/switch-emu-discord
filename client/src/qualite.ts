@@ -5,6 +5,7 @@
 export type Choix = 'auto' | '1080' | '720';
 export const HAUTE = 0;
 export const BASSE = 1;
+export const COMPAT = 2;  // 720p VP8 : pour les lecteurs sans H.264 (choisie par le lecteur, pas par l'adaptation)
 
 export interface Seconde {
   image: number | null;   // retard capture → affichage (ms)

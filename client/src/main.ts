@@ -364,11 +364,11 @@ function remplirManette(d: HTMLElement) {
 
   // Qualité vidéo : automatique selon la connexion (la fluidité d'abord), ou forcée.
   const qualite = el('select', { onchange: () => {
-    reglages = { ...reglages, qualite: qualite.value as 'auto' | '1080' | '720' };
+    reglages = { ...reglages, qualite: qualite.value as 'auto' | '1080' | '720' | 'compat' };
     enregistrer(reglages);
     lecteur?.definirQualite(reglages.qualite!);
   } });
-  for (const [v, t] of [['auto', 'Auto (selon ta connexion)'], ['1080', '1080p'], ['720', '720p (connexion faible)']] as const) {
+  for (const [v, t] of [['auto', 'Auto (selon ta connexion)'], ['1080', '1080p'], ['720', '720p (connexion faible)'], ['compat', 'Compatibilité (si l’image ne s’affiche pas)']] as const) {
     qualite.append(el('option', { value: v, textContent: t, selected: (reglages.qualite ?? 'auto') === v }));
   }
   enfants.push(el('label', { className: 'jouer-avec' }, 'Qualité ', qualite));

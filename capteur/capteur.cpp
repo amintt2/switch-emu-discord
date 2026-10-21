@@ -1,6 +1,8 @@
 // capteur : capture d'écran DXGI -> conversion NV12 sur le GPU -> encodeur matériel (AMF/NVENC/QSV via libavcodec).
 // Tout reste sur le GPU (zéro copie vers la mémoire centrale). Réglages d'encodeur repris de Sunshine
 // (LizardByte/Sunshine, src/video.cpp, GPL-3.0) : pas d'images B, GOP infini, IDR à la demande.
+// Exception : --codec libvpx (VP8, logiciel), le format de secours pour les lecteurs sans H.264 (certains
+// Discord) ; l'image NV12 est alors recopiée en mémoire centrale.
 //
 // Sortie (stdout), un paquet par image :
 //   u32 taille_charge | u8 drapeaux (bit0 = image clé) | i64 t_present_us | i64 t_sortie_us | charge (Annex B)
@@ -161,7 +163,7 @@ struct Converter {  // BGRA -> NV12 avec le processeur vidéo du GPU (mise à l'
   std::vector<std::pair<ID3D11Texture2D *, ComPtr<ID3D11VideoProcessorOutputView>>> outs;  // une vue par texture du pool
   RECT crop{};
 
-  bool init(ID3D11Device *dev, ID3D11DeviceContext *ctx, int sw, int sh, RECT c, int ow, int oh) {
+  bool init(ID3D11Device *dev, ID3D11DeviceContext *ctx, int sw, int sh, RECT c, int ow, int oh, bool bt601 = false) {
     crop = c;
     if (FAILED(dev->QueryInterface(IID_PPV_ARGS(&vdev))) || FAILED(ctx->QueryInterface(IID_PPV_ARGS(&vctx)))) return false;
     D3D11_TEXTURE2D_DESC td{};
@@ -178,7 +180,8 @@ struct Converter {  // BGRA -> NV12 avec le processeur vidéo du GPU (mise à l'
     ivd.ViewDimension = D3D11_VPIV_DIMENSION_TEXTURE2D;
     if (FAILED(vdev->CreateVideoProcessorInputView(src.Get(), en.Get(), &ivd, &in))) return false;
     D3D11_VIDEO_PROCESSOR_COLOR_SPACE ics{}; ics.RGB_Range = 0;  // RVB 0-255
-    D3D11_VIDEO_PROCESSOR_COLOR_SPACE ocs{}; ocs.YCbCr_Matrix = 1; ocs.Nominal_Range = D3D11_VIDEO_PROCESSOR_NOMINAL_RANGE_16_235;  // BT.709 limité
+    // BT.709 limité (H.264, signalé dans le flux) ; BT.601 limité pour le VP8, que les lecteurs supposent.
+    D3D11_VIDEO_PROCESSOR_COLOR_SPACE ocs{}; ocs.YCbCr_Matrix = bt601 ? 0 : 1; ocs.Nominal_Range = D3D11_VIDEO_PROCESSOR_NOMINAL_RANGE_16_235;
     vctx->VideoProcessorSetStreamColorSpace(vp.Get(), 0, &ics);
     vctx->VideoProcessorSetOutputColorSpace(vp.Get(), &ocs);
     vctx->VideoProcessorSetStreamSourceRect(vp.Get(), 0, TRUE, &crop);
@@ -215,16 +218,49 @@ struct Converter {  // BGRA -> NV12 avec le processeur vidéo du GPU (mise à l'
   }
 };
 
+static bool est_logiciel(const std::string &codec) { return codec == "libvpx"; }
+
 struct Encoder {
   AVCodecContext *c = nullptr;
   AVBufferRef *hwdev = nullptr, *hwframes = nullptr;
   AVPacket *pkt = av_packet_alloc();
   int fps = 60;
+  bool logiciel = false;
+
+  // VP8 (libvpx) en temps réel : images en mémoire centrale (YUV 4:2:0), une seule à la fois.
+  bool init_logiciel(const AVCodec *codec, const Options &o, int w, int h) {
+    logiciel = true;
+    c = avcodec_alloc_context3(codec);
+    c->width = w; c->height = h;
+    c->time_base = {1, 1000000};
+    c->framerate = {o.fps, 1};
+    c->pix_fmt = AV_PIX_FMT_YUV420P;
+    c->gop_size = std::numeric_limits<int16_t>::max();  // image clé seulement à la demande
+    c->keyint_min = std::numeric_limits<int>::max();
+    c->thread_count = 4;
+    c->color_range = AVCOL_RANGE_MPEG; c->colorspace = AVCOL_SPC_BT470BG;
+    set_bitrate(o.kbps);
+    c->rc_min_rate = c->bit_rate;
+    AVDictionary *d = nullptr;
+    av_dict_set(&d, "deadline", "realtime", 0);
+    av_dict_set(&d, "cpu-used", "12", 0);       // le plus rapide qui reste net (mesuré : 4x le temps réel en 720p60)
+    av_dict_set(&d, "lag-in-frames", "0", 0);   // aucune image retenue
+    av_dict_set(&d, "error-resilient", "1", 0);
+    av_dict_set(&d, "auto-alt-ref", "0", 0);
+    av_dict_set(&d, "static-thresh", "0", 0);
+    av_dict_set(&d, "max-intra-rate", "300", 0);  // une image clé ne fait pas plus de 3 images normales
+    int err = avcodec_open2(c, codec, &d);
+    av_dict_free(&d);
+    if (err < 0) { char e[128]; av_strerror(err, e, sizeof e); logf("ouverture de %s : %s", o.codec.c_str(), e); return false; }
+    logf("encodeur %s %dx%d @%d i/s, %d kbit/s", o.codec.c_str(), w, h, o.fps, o.kbps);
+    return true;
+  }
 
   bool init(ID3D11Device *dev, const Options &o, int w, int h) {
     fps = o.fps;
     const AVCodec *codec = avcodec_find_encoder_by_name(o.codec.c_str());
     if (!codec) { logf("encodeur %s absent", o.codec.c_str()); return false; }
+    if (est_logiciel(o.codec)) return init_logiciel(codec, o, w, h);
     hwdev = av_hwdevice_ctx_alloc(AV_HWDEVICE_TYPE_D3D11VA);
     auto dc = (AVD3D11VADeviceContext *) ((AVHWDeviceContext *) hwdev->data)->hwctx;
     dev->AddRef();
@@ -341,9 +377,22 @@ int wmain(int argc, wchar_t **argv) {
   ow &= ~1; oh &= ~1;
 
   Converter conv;
-  if (!conv.init(cap.dev.Get(), cap.ctx.Get(), dw, dh, crop, ow, oh)) { logf("processeur vidéo indisponible"); return 1; }
+  if (!conv.init(cap.dev.Get(), cap.ctx.Get(), dw, dh, crop, ow, oh, est_logiciel(o.codec))) { logf("processeur vidéo indisponible"); return 1; }
   Encoder enc;
   if (!enc.init(cap.dev.Get(), o, ow, oh)) return 1;
+
+  // Encodeur logiciel : la conversion NV12 se fait dans une texture à nous, recopiée vers une texture
+  // lisible par le processeur.
+  ComPtr<ID3D11Texture2D> nv12_cpu, lecture;
+  if (enc.logiciel) {
+    D3D11_TEXTURE2D_DESC td{};
+    td.Width = ow; td.Height = oh; td.MipLevels = 1; td.ArraySize = 1;
+    td.Format = DXGI_FORMAT_NV12; td.SampleDesc.Count = 1;
+    td.Usage = D3D11_USAGE_DEFAULT; td.BindFlags = D3D11_BIND_RENDER_TARGET;
+    if (FAILED(cap.dev->CreateTexture2D(&td, nullptr, &nv12_cpu))) { logf("texture NV12 impossible"); return 1; }
+    td.Usage = D3D11_USAGE_STAGING; td.BindFlags = 0; td.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
+    if (FAILED(cap.dev->CreateTexture2D(&td, nullptr, &lecture))) { logf("texture de lecture impossible"); return 1; }
+  }
 
   std::thread(stdin_thread).detach();
   AVFrame *frame = av_frame_alloc();
@@ -385,9 +434,27 @@ int wmain(int argc, wchar_t **argv) {
     if (!idr && (!pending || now - last_encode < interval - 1000)) continue;
 
     av_frame_unref(frame);
-    if (av_hwframe_get_buffer(enc.hwframes, frame, 0) < 0) { logf("plus de texture libre"); continue; }
-    auto nv12 = (ID3D11Texture2D *) frame->data[0];
-    if (!conv.blt(nv12, UINT(intptr_t(frame->data[1])))) { logf("conversion NV12 échouée"); continue; }
+    if (enc.logiciel) {
+      // NV12 (GPU) -> YUV 4:2:0 planaire (mémoire centrale) pour libvpx
+      if (!conv.blt(nv12_cpu.Get(), 0)) { logf("conversion NV12 échouée"); continue; }
+      cap.ctx->CopyResource(lecture.Get(), nv12_cpu.Get());
+      D3D11_MAPPED_SUBRESOURCE m{};
+      if (FAILED(cap.ctx->Map(lecture.Get(), 0, D3D11_MAP_READ, 0, &m))) { logf("lecture de l'image impossible"); continue; }
+      frame->format = AV_PIX_FMT_YUV420P; frame->width = ow; frame->height = oh;
+      if (av_frame_get_buffer(frame, 32) < 0) { cap.ctx->Unmap(lecture.Get(), 0); continue; }
+      auto y = (const uint8_t *) m.pData, uv = y + size_t(m.RowPitch) * oh;
+      for (int l = 0; l < oh; l++) std::memcpy(frame->data[0] + l * frame->linesize[0], y + l * m.RowPitch, ow);
+      for (int l = 0; l < oh / 2; l++) {
+        const uint8_t *s = uv + l * m.RowPitch;
+        uint8_t *u = frame->data[1] + l * frame->linesize[1], *v = frame->data[2] + l * frame->linesize[2];
+        for (int x = 0; x < ow / 2; x++) { u[x] = s[2 * x]; v[x] = s[2 * x + 1]; }
+      }
+      cap.ctx->Unmap(lecture.Get(), 0);
+    } else {
+      if (av_hwframe_get_buffer(enc.hwframes, frame, 0) < 0) { logf("plus de texture libre"); continue; }
+      auto nv12 = (ID3D11Texture2D *) frame->data[0];
+      if (!conv.blt(nv12, UINT(intptr_t(frame->data[1])))) { logf("conversion NV12 échouée"); continue; }
+    }
     frame->pts = now;
     if (idr) {
       g_idr = false;

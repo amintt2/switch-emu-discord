@@ -13,5 +13,8 @@
     "@fastify/static": "^10.1.6",
     "@fastify/websocket": "^11.3.4",
     "fastify": "^5.12.7"
+  },
+  "devDependencies": {
+    "ws": "^8.22.0"
   }
 }
