@@ -125,6 +125,8 @@ export class Lecteur {
   }
   private direct: Direct | null = null;
   private prochainDirect = 0;
+  private retardsRelais: number[] = [];  // retard de l'image par le relais (dernières secondes), pour comparer
+  private retardsDirect: number[] = [];
   private attenteDirect = 30_000;
   private ouvertDepuis = 0;
 
@@ -320,6 +322,31 @@ export class Lecteur {
     if (this.ws?.readyState === WebSocket.OPEN) this.ws.send(JSON.stringify(m));
   }
 
+  /**
+   * La connexion directe doit être meilleure que le relais : on compare le retard de l'image (médiane sur
+   * 8 s) à celui qu'on avait par le relais. Moins bonne : retour au relais, pas de nouvel essai avant 10 min.
+   */
+  private comparerDirect(image: number | null) {
+    if (image === null || !this.enLecture) return;
+    const mediane = (v: number[]) => [...v].sort((a, b) => a - b)[Math.floor(v.length / 2)];
+    if (!this.direct?.ouvert) {
+      this.retardsRelais.push(image);
+      if (this.retardsRelais.length > 10) this.retardsRelais.shift();
+      this.retardsDirect = [];
+      return;
+    }
+    this.retardsDirect.push(image);
+    if (this.retardsDirect.length < 8) return;
+    if (this.retardsDirect.length > 8) this.retardsDirect.shift();
+    const direct = mediane(this.retardsDirect);
+    const relais = this.retardsRelais.length >= 2 ? mediane(this.retardsRelais) : null;
+    if ((relais !== null && direct > relais + 15) || direct > 150) {
+      this.diag('direct', { abandon: 'plus lent que le relais', direct, relais: relais ?? -1 });
+      this.attenteDirect = 10 * 60_000;
+      this.direct.fermer();
+    }
+  }
+
   /** Hors Discord : connexion directe (WebRTC) avec le PC de l'hôte, négociée par le relais. */
   private async essayerDirect() {
     let d: Direct;
@@ -381,6 +408,8 @@ export class Lecteur {
     if (m.type === 'pong' && m.t !== undefined && m.s !== undefined) {
       this.hotePresent = true;
       this.horloge.ajouter(m.t, maintenant(), m.s);
+    } else if (m.type === 'saute') {
+      this.jetees++;  // le PC de l'hôte a sauté des images (connexion directe trop lente) : la qualité s'adapte
     } else if (m.type === 'reponse' && typeof m.sdp === 'string') {
       this.direct?.reponse(m.sdp).catch(() => this.direct?.fermer());
     } else if (m.type === 'vibration') {
@@ -491,6 +520,7 @@ export class Lecteur {
     const r = [...this.retards].sort((a, b) => a - b);
     const ping = this.horloge.allerRetour.at(-1);
     const image = r.length && this.horloge.allerRetour.length ? Math.max(0, Math.round(r[Math.floor(r.length / 2)])) : null;
+    this.comparerDirect(image);
     // Qualité adaptative : seulement quand l'image arrive (pas pendant une attente ou une reconnexion).
     if (this.enLecture && this.hotePresent && !this.hoteSansCouches && !this.compat) {
       const avant = this.adaptation.couche;

@@ -4,8 +4,10 @@ package main
 // de données), sans passer par le relais : moins de latence, surtout sur le même réseau.
 // La négociation passe par le relais (offre de l'ami → réponse de l'agent) : seul un membre de la
 // salle, avec son jeton de relais, peut l'ouvrir, et son identité (uid) vient du relais, pas de lui.
-// Le canal « video » est non ordonné, sans retransmission au-delà de 80 ms (une image en retard ne
-// sert plus) ; les images y sont découpées en morceaux : [u32 n° d'image][u16 morceau][u16 nombre][…]
+// Le canal « video » est fiable et ordonné (un morceau perdu est renvoyé : ça coûte un aller-retour,
+// pas une image clé entière) ; les images y sont découpées en morceaux : [u32 n° d'image][u16 morceau][u16 nombre][…]
+// Le retard ne s'accumule jamais : si plus de quelques images attendent déjà, on saute des images et on
+// repart d'une image clé une fois la file vidée (l'ami en est prévenu : sa qualité s'adapte).
 // (le son a sa propre numérotation, bit de poids fort à 1 : un son perdu n'oblige pas à une image clé).
 // Le canal « ctrl » (fiable) porte les mêmes messages que le relais : ping, idr, qualite, manette.
 
@@ -23,22 +25,33 @@ import (
 )
 
 const (
-	tailleMorceau  = 16000
-	maxP2P         = 8
-	enAttenteMax   = 2 << 20 // octets en attente dans le canal vidéo : au-delà, il ne suit pas
-	delaiOuvertP2P = 15 * time.Second
+	tailleMorceau   = 16000
+	maxP2P          = 8
+	attenteImageMax = 96 << 10  // une image normale ne part pas si plus que ça attend déjà (~2-3 images)
+	attenteCleMax   = 384 << 10 // une image clé (grosse) a droit à un peu plus
+	delaiOuvertP2P  = 15 * time.Second
 )
 
 var serveursSTUN = []string{"stun:stun.cloudflare.com:3478", "stun:stun.l.google.com:19302"}
 
+// canalVideo : ce que l'envoi utilise du canal « video » (un faux canal lent sert aux tests).
+type canalVideo interface {
+	ReadyState() webrtc.DataChannelState
+	BufferedAmount() uint64
+	Send([]byte) error
+}
+
 type lienP2P struct {
 	uid         string
 	pc          *webrtc.PeerConnection
-	ctrl, video *webrtc.DataChannel
+	ctrl        *webrtc.DataChannel
+	video       canalVideo
 	couche      atomic.Int32
 	numero      uint32 // images ; le son a sa propre suite (bit de poids fort à 1)
 	numeroSon   uint32
 	besoinCle   atomic.Bool
+	cleDemandee bool      // image clé déjà demandée depuis le dernier saut (boucle de la partie seulement)
+	dernierSaut time.Time // pour prévenir l'ami au plus 4 fois par seconde
 	fini        chan struct{}
 	une         sync.Once
 	// limite de débit du canal ctrl (messages traités un par un par pion)
@@ -55,7 +68,7 @@ func (p *lienP2P) fermer() {
 
 func (p *lienP2P) texte(v map[string]any) {
 	b, _ := json.Marshal(v)
-	if p.ctrl.ReadyState() == webrtc.DataChannelStateOpen {
+	if p.ctrl != nil && p.ctrl.ReadyState() == webrtc.DataChannelStateOpen {
 		p.ctrl.SendText(string(b))
 	}
 }
@@ -66,17 +79,35 @@ func (p *lienP2P) envoyer(charge []byte, cle, son bool) bool {
 	if p.video.ReadyState() != webrtc.DataChannelStateOpen {
 		return false
 	}
+	tampon := p.video.BufferedAmount()
 	if !son {
-		if p.besoinCle.Load() && !cle {
+		if p.besoinCle.Load() {
+			if !cle {
+				// La file se vide : on demande une image clé (une seule fois), en attendant on saute.
+				if tampon < attenteImageMax/2 && !p.cleDemandee {
+					p.cleDemandee = true
+					return false
+				}
+				return true
+			}
+			if tampon > attenteCleMax {
+				p.cleDemandee = false // trop plein même pour elle : on en redemandera une
+				return true
+			}
+		} else if tampon > attenteImageMax {
+			// L'image partirait en retard : on la saute (et les suivantes jusqu'à une image clé).
+			p.besoinCle.Store(true)
+			p.cleDemandee = false
+			if time.Since(p.dernierSaut) > 250*time.Millisecond {
+				p.dernierSaut = time.Now()
+				p.texte(map[string]any{"type": "saute"})
+			}
 			return true
 		}
-		if p.video.BufferedAmount() > enAttenteMax {
-			p.besoinCle.Store(true)
-			return false
-		}
 		p.besoinCle.Store(false)
-	} else if p.video.BufferedAmount() > enAttenteMax {
-		return true // un trou dans le son
+		p.cleDemandee = false
+	} else if tampon > 2*attenteImageMax {
+		return true // un trou dans le son plutôt que du retard
 	}
 	var numero uint32
 	if son {

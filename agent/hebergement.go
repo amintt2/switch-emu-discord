@@ -169,7 +169,7 @@ type resultatP2P struct {
 
 const (
 	negociationsMax = 3               // en même temps, tous amis confondus
-	entreOffres     = 5 * time.Second // par personne
+	entreOffres     = 2 * time.Second // par personne (une page rechargée repasse vite en direct)
 )
 
 func (d *diffusion) demanderIDR(q int) {
