@@ -150,9 +150,27 @@ func (h *hebergement) arreter() {
 type diffusion struct {
 	couches [nbCouches]*couche
 	man     *manettes
-	besoin  chan struct{} // un ami a choisi une couche : vérifier qu'elle tourne
-	p2p     chan *lienP2P // nouvelles connexions directes (hors Discord)
+	besoin  chan struct{}   // un ami a choisi une couche : vérifier qu'elle tourne
+	offres  chan demandeP2P // offres de connexion directe (hors Discord), traitées par la boucle de la partie
 }
+
+// demandeP2P : un ami propose une connexion directe ; l'uid vient du relais.
+type demandeP2P struct {
+	uid, sdp string
+	couche   int
+	repondre func(sdp string)
+}
+
+type resultatP2P struct {
+	uid string
+	id  int
+	p   *lienP2P // nil si la négociation a échoué
+}
+
+const (
+	negociationsMax = 3               // en même temps, tous amis confondus
+	entreOffres     = 5 * time.Second // par personne
+)
 
 func (d *diffusion) demanderIDR(q int) {
 	if q >= 0 && q < nbCouches {
@@ -173,7 +191,8 @@ func (h *hebergement) tourner(ctx context.Context, o ordreServeur, cfg Config, d
 	defer annuler()
 
 	sortie := make(chan imageCouche, 8)
-	diff := &diffusion{besoin: make(chan struct{}, 1), p2p: make(chan *lienP2P, 4)}
+	diff := &diffusion{besoin: make(chan struct{}, 1), offres: make(chan demandeP2P, 4)}
+	resultats := make(chan resultatP2P, negociationsMax)
 	for q := 0; q < nbCouches; q++ {
 		diff.couches[q] = &couche{q: q, capture: captureCouche(d.capture, q), exe: d.exeCapteur}
 	}
@@ -218,7 +237,15 @@ func (h *hebergement) tourner(ctx context.Context, o ordreServeur, cfg Config, d
 	}()
 
 	var wg sync.WaitGroup
-	defer func() { annuler(); wg.Wait() }() // les liens s'arrêtent avant les manettes et les capteurs
+	defer func() {
+		annuler()
+		wg.Wait() // liens et négociations s'arrêtent avant les manettes et les capteurs
+		for len(resultats) > 0 {
+			if r := <-resultats; r.p != nil {
+				r.p.fermer() // connexion directe ouverte au dernier moment : personne ne l'a prise
+			}
+		}
+	}()
 	premierJeton, dernierJeton := o.Jeton, o.Jeton
 	var muJeton sync.Mutex
 	jeton := func(ctx context.Context) (string, error) {
@@ -258,6 +285,11 @@ func (h *hebergement) tourner(ctx context.Context, o ordreServeur, cfg Config, d
 	// Amis en direct (P2P) : la vidéo et le son leur sont envoyés sans passer par le relais.
 	directs := map[*lienP2P]bool{}
 	finDirect := make(chan *lienP2P, 8)
+	negociations := map[string]context.CancelFunc{} // uid -> négociation en cours
+	idNego := map[string]int{}
+	derniereOffre := map[string]time.Time{}
+	exclus := map[string]bool{}
+	numeroNego := 0
 	defer func() {
 		for p := range directs {
 			p.fermer()
@@ -296,7 +328,54 @@ func (h *hebergement) tourner(ctx context.Context, o ordreServeur, cfg Config, d
 			d.signalerErr(o.Salle, "le capteur s'est arrêté")
 			log.Printf("hébergement de la salle %s : arrêt (capture impossible)", o.Salle)
 			return
-		case p := <-diff.p2p:
+		case dm := <-diff.offres:
+			// Une négociation à la fois par personne, une offre toutes les 5 s au plus, 3 en tout.
+			if exclus[dm.uid] || negociations[dm.uid] != nil || len(negociations) >= negociationsMax || time.Since(derniereOffre[dm.uid]) < entreOffres {
+				continue
+			}
+			derniereOffre[dm.uid] = time.Now()
+			nctx, annulerNego := context.WithCancel(ctx)
+			numeroNego++
+			id := numeroNego
+			negociations[dm.uid], idNego[dm.uid] = annulerNego, id
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				p, err := accepterP2P(nctx, dm.sdp, dm.uid, dm.repondre, func(p *lienP2P, b []byte) { messageP2P(p, b, diff) })
+				if err != nil {
+					if nctx.Err() == nil {
+						log.Printf("P2P : %v", err)
+					}
+					p = nil
+				} else {
+					p.couche.Store(int32(dm.couche))
+				}
+				select {
+				case resultats <- resultatP2P{dm.uid, id, p}:
+				default:
+					if p != nil {
+						p.fermer()
+					}
+				}
+			}()
+		case r := <-resultats:
+			if idNego[r.uid] == r.id {
+				negociations[r.uid]()
+				delete(negociations, r.uid)
+				delete(idNego, r.uid)
+			} else if r.p != nil {
+				r.p.fermer() // négociation annulée (personne retirée) entre-temps
+				continue
+			}
+			if r.p == nil {
+				continue
+			}
+			p := r.p
+			// Revérifié ici : retiré pendant la négociation = pas de connexion directe.
+			if exclus[p.uid] {
+				p.fermer()
+				continue
+			}
 			// Un seul lien direct par personne, et pas plus de maxP2P en tout.
 			for autre := range directs {
 				if autre.uid == p.uid {
@@ -308,7 +387,16 @@ func (h *hebergement) tourner(ctx context.Context, o ordreServeur, cfg Config, d
 				continue
 			}
 			directs[p] = true
-			go func() { <-p.fini; finDirect <- p }()
+			go func() {
+				select {
+				case <-p.fini:
+					select {
+					case finDirect <- p:
+					case <-ctx.Done():
+					}
+				case <-ctx.Done():
+				}
+			}()
 			diff.demanderIDR(int(p.couche.Load()))
 		case p := <-finDirect:
 			delete(directs, p)
@@ -376,6 +464,12 @@ func (h *hebergement) tourner(ctx context.Context, o ordreServeur, cfg Config, d
 				}
 				h.mu.Unlock()
 				signalerManettes()
+				exclus[o.UID] = true
+				if annulerNego := negociations[o.UID]; annulerNego != nil {
+					annulerNego()
+					delete(negociations, o.UID)
+					delete(idNego, o.UID)
+				}
 				for p := range directs {
 					if p.uid == o.UID {
 						p.fermer()
@@ -627,11 +721,17 @@ func (l *lienRelais) session(ctx context.Context, jeton string, diff *diffusion)
 		}
 		switch msg.Type {
 		case "arrivee":
-			amis[msg.De] = coucheHaute // en 1080p jusqu'à ce qu'il choisisse
+			// Le relais rejoue l'état de chacun quand l'hôte se reconnecte : sa couche et sa pause.
+			amis[msg.De] = coucheHaute
+			if msg.Q > 0 && msg.Q < nbCouches {
+				amis[msg.De] = msg.Q
+			}
+			pauses[msg.De] = msg.P
 			compter()
 			suivre(msg.De, msg.UID, true)
+			diff.signalerBesoin()
 			log.Printf("relais %s : un ami regarde (%d en tout)", l.url, len(amis))
-			diff.demanderIDR(coucheHaute)
+			diff.demanderIDR(amis[msg.De])
 		case "depart":
 			delete(amis, msg.De)
 			delete(pauses, msg.De)
@@ -660,22 +760,12 @@ func (l *lienRelais) session(ctx context.Context, jeton string, diff *diffusion)
 			if _, ok := amis[msg.De]; !ok || msg.UID == "" || msg.SDP == "" {
 				continue
 			}
-			de, uid, couche := msg.De, msg.UID, amis[msg.De]
-			go func() {
-				p, err := accepterP2P(sctx, msg.SDP, uid,
-					func(sdp string) { envoyerTexte(map[string]any{"type": "reponse", "a": de, "sdp": sdp}) },
-					func(p *lienP2P, b []byte) { messageP2P(p, b, diff) })
-				if err != nil {
-					log.Printf("P2P : %v", err)
-					return
-				}
-				p.couche.Store(int32(couche))
-				select {
-				case diff.p2p <- p:
-				case <-sctx.Done():
-					p.fermer()
-				}
-			}()
+			de := msg.De
+			select {
+			case diff.offres <- demandeP2P{uid: msg.UID, sdp: msg.SDP, couche: amis[msg.De],
+				repondre: func(sdp string) { envoyerTexte(map[string]any{"type": "reponse", "a": de, "sdp": sdp}) }}:
+			default: // trop de demandes : ignorée
+			}
 		case "manette":
 			r, seq, err := lireManette(b)
 			if err != nil {

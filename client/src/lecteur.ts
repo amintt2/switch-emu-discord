@@ -249,7 +249,8 @@ export class Lecteur {
       if (this.direct !== d) return;
       this.direct = null;
       if (etaitOuvert) {
-        // Retour immédiat par le relais.
+        // Retour immédiat par le relais, sur la couche choisie entre-temps.
+        this.envoyerRelais({ type: 'qualite', q: this.adaptation.couche });
         this.envoyerRelais({ type: 'pause', p: false });
         this.attendreCle = true;
         this.codec = '';

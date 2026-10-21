@@ -41,7 +41,8 @@ export class Salle {
   brancherHote(ws) {
     if (this.hote) try { this.hote.close(4000, 'remplacé par un autre hôte'); } catch {}
     this.hote = ws;
-    for (const id of this.amis.keys()) this.versHote({ type: 'arrivee', de: id });
+    // L'hôte (re)connecté reçoit l'état de chacun : qui, quelle couche, en direct ou non.
+    for (const id of this.amis.keys()) this.versHote({ type: 'arrivee', de: id, uid: this.uids.get(id), q: this.couches.get(id) ?? 0, p: this.pauses.has(id) });
     ws.addEventListener('message', (e) => this.depuisHote(e.data));
     ws.addEventListener('close', () => {
       if (this.hote !== ws) return;

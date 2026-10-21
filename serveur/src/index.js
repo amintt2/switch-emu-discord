@@ -365,11 +365,13 @@ app.register(async (scope) => {
         return;
       }
       // La capture s'est arrêtée sur le PC de l'hôte : la partie s'arrête pour tout le monde.
-      if (m?.type === 'fin' && typeof m.salle === 'string' && salles.get(m.salle)?.hote === a.uid) {
-        salles.arreter(m.salle, a.uid);
-        arretees.set(a.uid, m.salle);
-        diffuser(m.salle);
-        return;
+      if (m?.type === 'fin' && typeof m.salle === 'string' && m.salle.length <= 64) {
+        if (salles.get(m.salle)?.hote === a.uid) {
+          salles.arreter(m.salle, a.uid);
+          arretees.set(a.uid, m.salle);
+          diffuser(m.salle);
+        }
+        return ws.send(JSON.stringify({ type: 'fin-ok', salle: m.salle }));  // l'agent arrête de le redire
       }
       if (m?.type === 'manettes' && Array.isArray(m.places)) {
         manettesBranchees.set(a.uid, [...new Set(m.places.filter((n) => Number.isInteger(n) && n >= 1 && n <= 4))].sort());

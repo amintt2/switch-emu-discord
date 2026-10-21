@@ -11,6 +11,7 @@ const DUREE_VIE_MS = 80;
 export class Assembleur {
   private enCours = new Map<number, { total: number; recus: number; parts: (Uint8Array | null)[] }>();
   private derniereImage = 0;
+  private dernierSon = 0;
   private livrer: (paquet: ArrayBuffer) => void;
   private surPerte: () => void;
 
@@ -26,6 +27,7 @@ export class Assembleur {
     if (!total || i >= total) return;
     const son = (numero & 0x80000000) !== 0;
     if (!son && numero <= this.derniereImage) return;  // arrivée trop tard : déjà dépassée
+    if (son && (numero & 0x7FFFFFFF) <= this.dernierSon) return;  // son en retard : jeté (pas joué à l'envers)
     let e = this.enCours.get(numero);
     if (!e) {
       if (total === 1) return this.complet(numero, son, [new Uint8Array(buf, 8)]);
@@ -42,7 +44,8 @@ export class Assembleur {
   }
 
   private complet(numero: number, son: boolean, parts: Uint8Array[]) {
-    if (!son) {
+    if (son) this.dernierSon = numero & 0x7FFFFFFF;
+    else {
       if (this.derniereImage && numero !== this.derniereImage + 1) this.surPerte();  // une image manque
       this.derniereImage = numero;
       for (const n of this.enCours.keys()) if (!(n & 0x80000000) && n < numero) this.enCours.delete(n);

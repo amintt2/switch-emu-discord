@@ -37,7 +37,8 @@ export class Relais {
     if (role === 'hote') {
       if (s.hote && s.hote !== ws) s.hote.close(4000, 'remplacé par un autre hôte');
       s.hote = ws;
-      for (const id of s.amis.keys()) versHote({ type: 'arrivee', de: id });
+      // L'hôte (re)connecté reçoit l'état de chacun : qui, quelle couche, en direct ou non.
+      for (const [id, w] of s.amis) versHote({ type: 'arrivee', de: id, uid: w.uidRelais, q: w.couche, p: !!w.pause });
       ws.on('message', (d, binaire) => this.depuisHote(s, d, binaire, ws));
       ws.on('close', () => {
         if (s.hote !== ws) return;

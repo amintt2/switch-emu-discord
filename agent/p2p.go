@@ -114,16 +114,17 @@ func accepterP2P(ctx context.Context, offre, uid string, repondre func(sdp strin
 	var une sync.Once
 	var mu sync.Mutex
 	pc.OnDataChannel(func(dc *webrtc.DataChannel) {
+		// Exactement un canal de chaque sorte : un doublon est refusé (pas deux lecteurs en parallèle).
 		mu.Lock()
-		switch dc.Label() {
-		case "ctrl":
+		switch {
+		case dc.Label() == "ctrl" && p.ctrl == nil:
 			p.ctrl = dc
 			dc.OnMessage(func(m webrtc.DataChannelMessage) {
 				if len(m.Data) <= tailleMaxTexte {
 					surMessage(p, m.Data)
 				}
 			})
-		case "video":
+		case dc.Label() == "video" && p.video == nil:
 			p.video = dc
 		default:
 			mu.Unlock()

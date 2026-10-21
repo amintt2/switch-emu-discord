@@ -347,10 +347,7 @@ func (a *Agent) heberger(ctx context.Context, o ordreServeur, cfg Config) {
 		e := a.envoyer
 		a.mu.Unlock()
 		if seule && e != nil {
-			e(map[string]any{"type": "fin", "salle": h.salle})
-			a.mu.Lock()
-			a.finAPrevenir = ""
-			a.mu.Unlock()
+			e(map[string]any{"type": "fin", "salle": h.salle}) // redit à chaque connexion tant que le serveur n'a pas répondu
 		}
 	}()
 }
@@ -437,7 +434,6 @@ func (a *Agent) session(ctx, partieCtx context.Context, cfg Config) error {
 			a.mu.Lock()
 			a.connecte, a.envoyer, a.derniere, a.horsLigne = true, envoyer, "", time.Time{}
 			jeux, actuel, salle, fin := a.jeux, a.jeuActuel, a.salle, a.finAPrevenir
-			a.finAPrevenir = ""
 			a.mu.Unlock()
 			if fin != "" {
 				envoyer(map[string]any{"type": "fin", "salle": fin})
@@ -462,6 +458,12 @@ func (a *Agent) session(ctx, partieCtx context.Context, cfg Config) error {
 			case a.jetons <- o:
 			default:
 			}
+		case "fin-ok":
+			a.mu.Lock()
+			if a.finAPrevenir == o.Salle {
+				a.finAPrevenir = ""
+			}
+			a.mu.Unlock()
 		case "places", "exclure":
 			if p := a.partie(); p != nil && p.salle == o.Salle {
 				p.transmettre(o)

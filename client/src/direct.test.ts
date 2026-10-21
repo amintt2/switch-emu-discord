@@ -52,3 +52,11 @@ test('morceaux invalides ignorés', () => {
   a.recevoir(morceau(1, 0, 0, [1]));
   assert.deepEqual(livres, []);
 });
+
+test('son arrivé dans le désordre : le plus vieux est jeté, jamais joué à l’envers', () => {
+  const { a, livres } = fabrique();
+  a.recevoir(morceau(0x80000002, 0, 1, [2]));
+  a.recevoir(morceau(0x80000001, 0, 1, [1]));
+  a.recevoir(morceau(0x80000003, 0, 1, [3]));
+  assert.deepEqual(livres, [[2], [3]]);
+});

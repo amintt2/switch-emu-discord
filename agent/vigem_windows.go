@@ -63,6 +63,7 @@ type Pad struct {
 	bus       *ViGEm
 	serial    uint32
 	debranche atomic.Bool
+	notif     atomic.Pointer[windows.Overlapped] // demande de vibration en attente
 }
 
 // xusbNotification is XUSB_REQUEST_NOTIFICATION: the driver completes it when the game changes the rumble.
@@ -100,6 +101,11 @@ func OpenViGEm() (*ViGEm, error) {
 // notification request (rumble) never blocks the other requests. The kernel reads and writes a heap
 // buffer, never Go stack memory (stacks can move).
 func (v *ViGEm) ioctl(code uint32, in unsafe.Pointer, inLen uint32, out unsafe.Pointer, outLen uint32) error {
+	return v.ioctlEnAttente(code, in, inLen, out, outLen, nil)
+}
+
+// ioctlEnAttente : comme ioctl ; enAttente reçoit la requête quand elle reste en attente (pour l'annuler).
+func (v *ViGEm) ioctlEnAttente(code uint32, in unsafe.Pointer, inLen uint32, out unsafe.Pointer, outLen uint32, enAttente func(*windows.Overlapped)) error {
 	n := max(inLen, outLen, 1)
 	buf := make([]byte, n)
 	copy(buf, unsafe.Slice((*byte)(in), inLen))
@@ -116,6 +122,9 @@ func (v *ViGEm) ioctl(code uint32, in unsafe.Pointer, inLen uint32, out unsafe.P
 	}
 	err = windows.DeviceIoControl(v.h, code, &buf[0], inLen, sortie, outLen, &lus, ov)
 	if err == windows.ERROR_IO_PENDING {
+		if enAttente != nil {
+			enAttente(ov)
+		}
 		err = windows.GetOverlappedResult(v.h, ov, &lus, true)
 	}
 	if err == nil && outLen > 0 {
@@ -161,7 +170,9 @@ func (p *Pad) Unplug() error {
 	p.debranche.Store(true)
 	u := sizeSerial{Size: 8, SerialNo: p.serial}
 	err := p.bus.ioctl(ioctlUnplug, unsafe.Pointer(&u), 8, nil, 0)
-	windows.CancelIoEx(p.bus.h, nil) // réveille la demande de vibration en attente (les autres la refont)
+	if ov := p.notif.Load(); ov != nil {
+		windows.CancelIoEx(p.bus.h, ov) // réveille seulement la demande de vibration de cette manette
+	}
 	return err
 }
 
@@ -170,12 +181,15 @@ func (p *Pad) Unplug() error {
 func (p *Pad) Vibrations(f func(fort, faible uint8)) {
 	for !p.debranche.Load() {
 		n := xusbNotification{Size: 12, SerialNo: p.serial}
-		err := p.bus.ioctl(ioctlXusbNotif, unsafe.Pointer(&n), 12, unsafe.Pointer(&n), 12)
+		err := p.bus.ioctlEnAttente(ioctlXusbNotif, unsafe.Pointer(&n), 12, unsafe.Pointer(&n), 12, func(ov *windows.Overlapped) {
+			p.notif.Store(ov)
+			if p.debranche.Load() { // débranchée juste avant : on annule nous-mêmes
+				windows.CancelIoEx(p.bus.h, ov)
+			}
+		})
+		p.notif.Store(nil)
 		if p.debranche.Load() {
 			return
-		}
-		if err == windows.ERROR_OPERATION_ABORTED {
-			continue // annulée pour une autre manette
 		}
 		if err != nil {
 			return

@@ -130,3 +130,12 @@ test('pause : un ami en direct (P2P) ne reçoit plus les images, mais toujours l
   hote.binaire(image);
   assert.equal(String(a.recus.at(-1)), 'vid!');
 });
+
+test('l’hôte qui se reconnecte retrouve l’état de chacun (qui, quelle couche, en direct ou non)', () => {
+  const { entrer } = fabrique();
+  const a = entrer('ami', 'a');
+  a.texte({ type: 'qualite', q: 1 });
+  a.texte({ type: 'pause', p: true });
+  const hote = entrer('hote', 'h');
+  assert.deepEqual(hote.recus[0], { type: 'arrivee', de: 1, uid: 'a', q: 1, p: true });
+});
