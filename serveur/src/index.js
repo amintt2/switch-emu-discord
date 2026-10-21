@@ -15,7 +15,7 @@ import { Relais } from './relais.js';
 const SESSION_MS = 24 * 3600_000;
 const JETON_RELAIS_MS = 5 * 60_000;
 const JETON_RELAIS_HOTE_MS = 2 * 3600_000;  // l'agent le réutilise si le serveur ne répond plus
-const DELAI_AGENT_MS = 45_000;    // l'agent a ce temps pour revenir avant que la partie s'arrête
+const DELAI_AGENT_MS = 90_000;    // l'agent a ce temps pour revenir avant que la partie s'arrête (coupure de la box…)
 const DELAI_REPRISE_MS = 60_000;  // après un redémarrage du serveur : l'hôte a ce temps pour revenir dans sa salle
 const BATTEMENT_MS = 15_000;
 
@@ -122,8 +122,9 @@ setInterval(() => {
   // Un hôte parti depuis trop longtemps : la partie s'arrête, son agent aussi.
   const hotes = new Map([...salles.salles.values()].filter((s) => s.hote).map((s) => [s.id, s.hote]));
   for (const id of salles.tick()) {
+    // (pas un arrêt voulu : si l'hôte et son agent reviennent, la partie peut reprendre)
     const avant = hotes.get(id);
-    if (avant && salles.get(id)?.hote !== avant) arreterPartie(avant, id);
+    if (avant && salles.get(id)?.hote !== avant) commanderAgent(avant, id, false);
     diffuser(id);
     envoyerPlaces(id);
   }
@@ -419,7 +420,8 @@ app.register(async (scope) => {
         departsAgent.delete(a.uid);
         if (agents.enLigne(a.uid)) return;
         app.log.info({ uid: a.uid }, 'agent parti pour de bon : la partie s’arrête');
-        for (const id of salles.agentParti(a.uid)) { arretees.set(a.uid, id); diffuser(id); }
+        // Pas un arrêt voulu : si l'agent revient plus tard en hébergeant encore, la partie reprend.
+        for (const id of salles.agentParti(a.uid)) diffuser(id);
       }, DELAI_AGENT_MS));
     });
   });

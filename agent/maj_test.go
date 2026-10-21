@@ -86,3 +86,12 @@ func TestExtraireZipRefuseLesChemins(t *testing.T) {
 		t.Fatal("zip slip accepté")
 	}
 }
+
+func TestAcceptSelonURL(t *testing.T) {
+	if accepterPour(urlDerniere) != "application/vnd.github+json" {
+		t.Fatal("l'API de GitHub refuse octet-stream (415) : les mises à jour ne marchaient jamais")
+	}
+	if accepterPour("https://github.com/amintt2/switch-emu-discord/releases/download/agent-v0.5.0/manifest.json") != "application/octet-stream" {
+		t.Fatal("fichiers : octet-stream")
+	}
+}
