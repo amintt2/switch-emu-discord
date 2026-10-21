@@ -69,6 +69,8 @@ export class Lecteur {
   private cles = 0;
   private reconnexions = 0;
   private adaptation: Adaptation;
+  private changementCouche = 0;
+  private hoteSansCouches = false;  // agent ancien : une seule qualité, pas d'adaptation
   private direct: Direct | null = null;
   private prochainDirect = 0;
   private attenteDirect = 30_000;
@@ -89,6 +91,7 @@ export class Lecteur {
 
   /** Qualité vidéo : automatique ou forcée (1080p / 720p). */
   definirQualite(choix: Choix) {
+    if (this.hoteSansCouches) return;
     const avant = this.adaptation.couche;
     this.adaptation.definir(choix);
     if (this.adaptation.couche !== avant) this.changerCouche();
@@ -96,6 +99,7 @@ export class Lecteur {
 
   /** On passe sur l'autre couche : le relais nous l'envoie, on repart de sa prochaine image clé. */
   private changerCouche() {
+    this.changementCouche = Date.now();
     this.attendreCle = true;
     this.codec = '';
     this.envoyer({ type: 'qualite', q: this.adaptation.couche });
@@ -166,6 +170,7 @@ export class Lecteur {
         this.hotePresent = true;
         this.dernierMessage = Date.now();
         this.surEtat('attente-image');
+        this.changementCouche = Date.now();
         if (this.adaptation.couche !== 0) this.envoyer({ type: 'qualite', q: this.adaptation.couche });
         this.demanderCle();
         this.timers.push(
@@ -300,7 +305,14 @@ export class Lecteur {
     this.hotePresent = true;
     this.octets += buf.byteLength;
     if (img.son) { this.surSon(img.donnees); return; }
-    if (img.qualite !== this.adaptation.couche) return;  // image de l'autre couche, juste après un changement
+    if (img.qualite !== this.adaptation.couche) {
+      if (Date.now() - this.changementCouche < 3000) return;  // image de l'autre couche, juste après un changement
+      // Toujours l'autre couche : le PC de l'hôte n'en a qu'une (agent pas encore à jour). On la prend.
+      this.hoteSansCouches = true;
+      this.adaptation.definir(img.qualite === BASSE ? '720' : '1080');
+      this.attendreCle = !img.cle;
+      this.codec = '';
+    }
     if (img.cle) this.cles++;
     if (this.attendreCle && !img.cle) return;
     if (img.cle) {
@@ -368,7 +380,7 @@ export class Lecteur {
     const ping = this.horloge.allerRetour.at(-1);
     const image = r.length && this.horloge.allerRetour.length ? Math.max(0, Math.round(r[Math.floor(r.length / 2)])) : null;
     // Qualité adaptative : seulement quand l'image arrive (pas pendant une attente ou une reconnexion).
-    if (this.enLecture && this.hotePresent) {
+    if (this.enLecture && this.hotePresent && !this.hoteSansCouches) {
       const avant = this.adaptation.couche;
       if (this.adaptation.seconde({ image, jetees: this.jetees, ips: this.images }) !== avant) this.changerCouche();
     }
@@ -386,7 +398,7 @@ export class Lecteur {
       cles: this.cles,
       reconnexions: this.reconnexions,
       file: this.decodeur?.decodeQueueSize ?? 0,
-      qualite: `${this.adaptation.couche === BASSE ? '720p' : '1080p'} (${this.adaptation.choix === 'auto' ? 'auto' : 'choisie'})`,
+      qualite: `${this.adaptation.couche === BASSE ? '720p' : '1080p'} (${this.hoteSansCouches ? 'seule qualité du PC de l’hôte' : this.adaptation.choix === 'auto' ? 'auto' : 'choisie'})`,
     });
     this.images = this.octets = this.jetees = this.cles = 0;
     this.retards = this.retards.slice(-60);
