@@ -88,20 +88,45 @@ function commanderAgent(uid, salleId, heberger) {
   } else agents.envoyer(uid, { type: 'arreter', salle: salleId });
 }
 
-/** Un agent revenu après un redémarrage du serveur reprend sa salle dès que son propriétaire y est. */
+/** uid -> salle : parties arrêtées (par l'hôte, ou parce qu'il est parti) ; l'agent ne doit pas les reprendre. */
+const arretees = new Map();
+
+/** Arrête la partie de l'hôte uid dans cette salle, et le dit à son agent (ou le lui redira à son retour). */
+function arreterPartie(uid, salleId) {
+  arretees.set(uid, salleId);
+  commanderAgent(uid, salleId, false);
+}
+
+/** Renvoie à l'agent les places et les exclusions : des ordres ont pu se perdre pendant une coupure. */
+function resynchroniser(uid, salleId) {
+  envoyerPlaces(salleId);
+  for (const exclu of salles.get(salleId)?.exclus.keys() ?? []) agents.envoyer(uid, { type: 'exclure', salle: salleId, uid: exclu });
+}
+
+/**
+ * Un agent revenu dit héberger une salle. Si le serveur la connaît encore, on resynchronise ; s'il l'a
+ * oubliée (redémarrage), la salle est reprise dès que son propriétaire y est.
+ */
 function reprendre(uid, salleId) {
   const s = salles.get(salleId);
-  if (s?.hote === uid) return true;
+  if (s?.hote === uid) { resynchroniser(uid, salleId); return true; }
   if (!s?.participants.has(uid) || s.hote) return false;
   if (salles.heberger(salleId, uid).erreur) return false;
   app.log.info({ uid, salle: court(salleId) }, 'hébergement repris');
   diffuser(salleId);
-  envoyerPlaces(salleId);
+  resynchroniser(uid, salleId);
   return true;
 }
 
 setInterval(() => {
-  for (const id of salles.tick()) { diffuser(id); envoyerPlaces(id); }
+  // Un hôte parti depuis trop longtemps : la partie s'arrête, son agent aussi.
+  const hotes = new Map([...salles.salles.values()].filter((s) => s.hote).map((s) => [s.id, s.hote]));
+  for (const id of salles.tick()) {
+    const avant = hotes.get(id);
+    if (avant && salles.get(id)?.hote !== avant) arreterPartie(avant, id);
+    diffuser(id);
+    envoyerPlaces(id);
+  }
   for (const [uid, r] of reprises) {
     if (reprendre(uid, r.salle)) reprises.delete(uid);
     else if (Date.now() > r.jusqua) { reprises.delete(uid); commanderAgent(uid, r.salle, false); }
@@ -157,23 +182,32 @@ app.post('/api/token', async (request, reply) => {
 // « Ouvrir dans le navigateur » : l'Activité demande un jeton de passage (2 min, une seule fois),
 // le navigateur l'échange contre une session dans la même salle, sans se reconnecter à Discord.
 const PASSAGE_MS = 2 * 60_000;
+// Les jetons consommés ne sont gardés qu'en mémoire : un jeton émis avant ce démarrage est refusé.
+const DEMARRAGE = Date.now();
 app.post('/api/passage', async (request, reply) => {
   const s = session((request.headers.authorization || '').replace(/^Bearer\s+/i, ''));
   if (!s) return reply.code(401).send({ error: 'Session invalide ou expirée' });
   const { uid, nom, avatar, salle } = s;
-  const p = signer(config.sessionSecret, { passage: true, id: randomBytes(12).toString('base64url'), uid, nom, avatar, salle }, PASSAGE_MS);
+  const p = signer(config.sessionSecret, { passage: true, id: randomBytes(12).toString('base64url'), ne: Date.now(), uid, nom, avatar, salle }, PASSAGE_MS);
   return { url: `${config.publicUrl}/?passage=${encodeURIComponent(p)}` };
 });
 
 app.post('/api/passage/echange', async (request, reply) => {
   const p = verifier(config.sessionSecret, request.body?.passage);
-  if (!p?.passage || typeof p.id !== 'string' || passagesUtilises.has(p.id)) {
+  if (!p?.passage || typeof p.id !== 'string' || !(p.ne >= DEMARRAGE) || passagesUtilises.has(p.id)) {
     return reply.code(400).send({ error: 'Lien expiré : rouvre-le depuis l’Activité dans Discord.' });
   }
   for (const [id, fin] of passagesUtilises) if (fin < Date.now()) passagesUtilises.delete(id);
   passagesUtilises.set(p.id, p.exp);
   const user = { uid: p.uid, nom: p.nom, avatar: p.avatar };
   return { session: signer(config.sessionSecret, { ...user, salle: p.salle }, SESSION_MS), user };
+});
+
+// La page ouverte dans le navigateur garde sa session dans l'onglet : après F5, elle vérifie qu'elle vaut encore.
+app.get('/api/moi', async (request, reply) => {
+  const s = session((request.headers.authorization || '').replace(/^Bearer\s+/i, ''));
+  if (!s) return reply.code(401).send({ error: 'Session expirée : rouvre la partie depuis l’Activité dans Discord.' });
+  return { user: { uid: s.uid, nom: s.nom, avatar: s.avatar ?? null } };
 });
 
 app.post('/api/dev-session', async (request, reply) => {
@@ -268,11 +302,12 @@ app.register(async (scope) => {
       } else if (m?.type === 'heberger') {
         const r = salles.heberger(s.salle, s.uid);
         if (r.erreur) return ws.send(JSON.stringify({ type: 'erreur', texte: r.erreur }));
+        arretees.delete(s.uid);
         commanderAgent(s.uid, s.salle, true);
         envoyerPlaces(s.salle);
         diffuser(s.salle);
       } else if (m?.type === 'arreter') {
-        if (salles.arreter(s.salle, s.uid)) { commanderAgent(s.uid, s.salle, false); diffuser(s.salle); }
+        if (salles.arreter(s.salle, s.uid)) { arreterPartie(s.uid, s.salle); diffuser(s.salle); }
       } else if (m?.type === 'place') {
         const r = salles.prendrePlace(s.salle, s.uid, Number(m.joueur));
         if (r.erreur) return ws.send(JSON.stringify({ type: 'erreur', texte: r.erreur }));
@@ -324,7 +359,16 @@ app.register(async (scope) => {
       try { m = JSON.parse(raw); } catch { return; }
       // Après une reconnexion, l'agent dit quelle salle il héberge encore.
       if (m?.type === 'heberge' && typeof m.salle === 'string' && m.salle.length <= 64) {
+        // Arrêtée pendant la coupure (« Arrêter », ou l'hôte est parti) : on le redit à l'agent.
+        if (arretees.get(a.uid) === m.salle) return commanderAgent(a.uid, m.salle, false);
         if (!reprendre(a.uid, m.salle)) reprises.set(a.uid, { salle: m.salle, jusqua: Date.now() + DELAI_REPRISE_MS });
+        return;
+      }
+      // La capture s'est arrêtée sur le PC de l'hôte : la partie s'arrête pour tout le monde.
+      if (m?.type === 'fin' && typeof m.salle === 'string' && salles.get(m.salle)?.hote === a.uid) {
+        salles.arreter(m.salle, a.uid);
+        arretees.set(a.uid, m.salle);
+        diffuser(m.salle);
         return;
       }
       if (m?.type === 'manettes' && Array.isArray(m.places)) {
@@ -363,7 +407,7 @@ app.register(async (scope) => {
         departsAgent.delete(a.uid);
         if (agents.enLigne(a.uid)) return;
         app.log.info({ uid: a.uid }, 'agent parti pour de bon : la partie s’arrête');
-        for (const id of salles.agentParti(a.uid)) diffuser(id);
+        for (const id of salles.agentParti(a.uid)) { arretees.set(a.uid, id); diffuser(id); }
       }, DELAI_AGENT_MS));
     });
   });

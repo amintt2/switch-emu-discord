@@ -5,6 +5,8 @@
 // Stabilité : battements avec le relais (une connexion morte est repérée en quelques secondes),
 // reconnexion immédiate, image clé redemandée tant qu'elle n'arrive pas, décodeur logiciel en repli.
 import { codecDepuisSPS, Horloge, lireImage } from './protocole.ts';
+import { Adaptation, BASSE, type Choix } from './qualite.ts';
+import { Direct } from './direct.ts';
 
 export interface Relais { nom: string; discord: string; web: string }
 export interface Flux { relais: Relais[]; jeton: string }
@@ -24,6 +26,7 @@ export interface Mesures {
   cles: number;               // images clés reçues sur la dernière seconde
   reconnexions: number;       // depuis le début
   file: number;               // images en attente dans le décodeur
+  qualite: string;            // « 1080p (auto) »…
 }
 
 export type Etat = 'connexion' | 'attente-image' | 'lecture' | 'coupe' | 'erreur';
@@ -34,6 +37,8 @@ const SILENCE_MAX_MS = 6000;      // plus rien reçu du relais : la connexion es
 const BATTEMENT_MS = 2000;
 const RELANCE_CLE_MS = 1000;      // image clé redemandée chaque seconde tant qu'elle n'arrive pas
 const AGE_MAX_JETON_MS = 4 * 60_000;
+const DIRECT_APRES_MS = 2000;     // hors Discord : connexion directe tentée 2 s après la connexion au PC de l'hôte
+const SILENCE_DIRECT_MS = 3000;   // plus rien en direct : retour par le relais
 const FILE_MAX = 3;               // au-delà, le décodeur ne suit pas : on saute à la prochaine image clé
 
 const pause = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -63,6 +68,11 @@ export class Lecteur {
   private jetees = 0;
   private cles = 0;
   private reconnexions = 0;
+  private adaptation: Adaptation;
+  private direct: Direct | null = null;
+  private prochainDirect = 0;
+  private attenteDirect = 30_000;
+  private ouvertDepuis = 0;
 
   constructor(
     private canvas: HTMLCanvasElement,
@@ -71,8 +81,25 @@ export class Lecteur {
     private surMesures: (m: Mesures) => void,
     private demanderJeton: () => Promise<Flux>,
     private diag: Diag = () => {},
+    choix: Choix = 'auto',
   ) {
     this.ctx = canvas.getContext('2d', { alpha: false, desynchronized: true })!;
+    this.adaptation = new Adaptation(choix);
+  }
+
+  /** Qualité vidéo : automatique ou forcée (1080p / 720p). */
+  definirQualite(choix: Choix) {
+    const avant = this.adaptation.couche;
+    this.adaptation.definir(choix);
+    if (this.adaptation.couche !== avant) this.changerCouche();
+  }
+
+  /** On passe sur l'autre couche : le relais nous l'envoie, on repart de sa prochaine image clé. */
+  private changerCouche() {
+    this.attendreCle = true;
+    this.codec = '';
+    this.envoyer({ type: 'qualite', q: this.adaptation.couche });
+    this.diag('qualite', { q: this.adaptation.couche, choix: this.adaptation.choix });
   }
 
   async demarrer(flux: Flux) {
@@ -132,29 +159,35 @@ export class Lecteur {
       const delai = setTimeout(() => { if (!ouvert) ws.close(); }, DELAI_OUVERTURE_MS);
       ws.onopen = () => {
         ouvert = true;
-        debut = Date.now();
+        debut = this.ouvertDepuis = Date.now();
         clearTimeout(delai);
         this.relaisActif = nom;
         this.attendreCle = true;
         this.hotePresent = true;
         this.dernierMessage = Date.now();
         this.surEtat('attente-image');
+        if (this.adaptation.couche !== 0) this.envoyer({ type: 'qualite', q: this.adaptation.couche });
         this.demanderCle();
         this.timers.push(
           window.setInterval(() => this.envoyer({ type: 'ping', t: maintenant() }), 1000),
-          window.setInterval(() => this.envoyer({ type: 'battement' }), BATTEMENT_MS),
+          window.setInterval(() => this.envoyerRelais({ type: 'battement' }), BATTEMENT_MS),
           window.setInterval(() => this.publierMesures(), 1000),
           window.setInterval(() => {
             // Connexion morte (Wi-Fi coupé, relais redémarré) : on la ferme pour repartir tout de suite.
             if (Date.now() - this.dernierMessage > SILENCE_MAX_MS) { mort = true; ws.close(); return; }
             if (this.attendreCle && this.hotePresent && Date.now() - this.derniereDemandeCle > RELANCE_CLE_MS) this.demanderCle();
+            // Connexion directe (hors Discord) : tentée quand l'image arrive bien, abandonnée si elle se tait.
+            if (this.direct?.ouvert && Date.now() - this.direct.dernierMessage > SILENCE_DIRECT_MS) this.direct.fermer();
+            if (!this.dansDiscord && !this.direct && typeof RTCPeerConnection !== 'undefined' && this.hotePresent
+              && this.horloge.allerRetour.length > 0 && Date.now() - this.ouvertDepuis > DIRECT_APRES_MS
+              && Date.now() > this.prochainDirect) void this.essayerDirect();
           }, 250),
         );
       };
       ws.onmessage = (e) => {
         this.dernierMessage = Date.now();
         if (typeof e.data === 'string') this.surTexte(e.data);
-        else this.surImage(e.data);
+        else if (!this.direct?.ouvert) this.surImage(e.data);  // en direct : les images du relais (en vol) sont ignorées
       };
       ws.onclose = (e) => {
         clearTimeout(delai);
@@ -167,13 +200,71 @@ export class Lecteur {
   /** Le PC de l'hôte ne peut pas créer de manette virtuelle (ViGEmBus absent…). */
   surManetteIndisponible: (raison: string) => void = () => {};
 
+  /** Son du jeu reçu (PCM 16 bits 48 kHz stéréo). */
+  surSon: (pcm: Uint8Array) => void = () => {};
+
+  /** Le jeu fait vibrer la manette de ce joueur (moteurs fort et faible, de 0 à 1). */
+  surVibration: (fort: number, faible: number) => void = () => {};
+
   /** Envoie une commande (manette) à l'hôte, par le relais. */
   envoyerCommande(m: object) {
     this.envoyer(m);
   }
 
+  /** Vers l'hôte : en direct si la connexion directe est ouverte, sinon par le relais. */
   private envoyer(m: object) {
+    if (this.direct?.ouvert) this.direct.envoyer(m);
+    else this.envoyerRelais(m);
+  }
+
+  private envoyerRelais(m: object) {
     if (this.ws?.readyState === WebSocket.OPEN) this.ws.send(JSON.stringify(m));
+  }
+
+  /** Hors Discord : connexion directe (WebRTC) avec le PC de l'hôte, négociée par le relais. */
+  private async essayerDirect() {
+    let d: Direct;
+    try {
+      d = new Direct(
+        (b) => { this.dernierMessage = Date.now(); this.surImage(b); },
+        (t) => this.surTexte(t),
+        () => { this.attendreCle = true; this.demanderCle(); },  // une image perdue en route
+      );
+    } catch {
+      this.prochainDirect = Infinity;  // WebRTC indisponible ici
+      return;
+    }
+    this.direct = d;
+    d.surOuvert = () => {
+      // Le relais n'envoie plus d'images (il garde la négociation et sert de secours) ; on repart d'une image clé.
+      this.envoyerRelais({ type: 'pause', p: true });
+      this.attendreCle = true;
+      this.codec = '';
+      this.envoyer({ type: 'qualite', q: this.adaptation.couche });
+      this.demanderCle();
+      this.attenteDirect = 30_000;
+      this.diag('direct', { ouvert: true });
+    };
+    d.surFin = (etaitOuvert) => {
+      if (this.direct !== d) return;
+      this.direct = null;
+      if (etaitOuvert) {
+        // Retour immédiat par le relais.
+        this.envoyerRelais({ type: 'pause', p: false });
+        this.attendreCle = true;
+        this.codec = '';
+        this.demanderCle();
+        this.diag('direct', { ouvert: false });
+      }
+      this.prochainDirect = Date.now() + this.attenteDirect;
+      this.attenteDirect = Math.min(300_000, this.attenteDirect * 2);
+    };
+    setTimeout(() => { if (this.direct === d && !d.ouvert) d.fermer(); }, 15_000);
+    try {
+      this.envoyerRelais({ type: 'offre', sdp: await d.offre() });
+    } catch {
+      d.fermer();
+    }
   }
 
   private demanderCle() {
@@ -182,11 +273,16 @@ export class Lecteur {
   }
 
   private surTexte(t: string) {
-    let m: { type: string; t?: number; s?: number; joueur?: number; raison?: string };
+    let m: { type: string; t?: number; s?: number; joueur?: number; raison?: string; f?: number; l?: number; sdp?: string };
     try { m = JSON.parse(t); } catch { return; }
     if (m.type === 'pong' && m.t !== undefined && m.s !== undefined) {
       this.hotePresent = true;
       this.horloge.ajouter(m.t, maintenant(), m.s);
+    } else if (m.type === 'reponse' && typeof m.sdp === 'string') {
+      this.direct?.reponse(m.sdp).catch(() => this.direct?.fermer());
+    } else if (m.type === 'vibration') {
+      const borne = (v: unknown) => (typeof v === 'number' ? Math.max(0, Math.min(1, v / 255)) : 0);
+      this.surVibration(borne(m.f), borne(m.l));
     } else if (m.type === 'manette-indisponible') {
       this.surManetteIndisponible(m.raison ?? 'manette indisponible');
     } else if (m.type === 'hote-parti' || m.type === 'pas-d-hote') {
@@ -202,6 +298,8 @@ export class Lecteur {
     if (!img) return;
     this.hotePresent = true;
     this.octets += buf.byteLength;
+    if (img.son) { this.surSon(img.donnees); return; }
+    if (img.qualite !== this.adaptation.couche) return;  // image de l'autre couche, juste après un changement
     if (img.cle) this.cles++;
     if (this.attendreCle && !img.cle) return;
     if (img.cle) {
@@ -267,10 +365,16 @@ export class Lecteur {
   private publierMesures() {
     const r = [...this.retards].sort((a, b) => a - b);
     const ping = this.horloge.allerRetour.at(-1);
+    const image = r.length && this.horloge.allerRetour.length ? Math.max(0, Math.round(r[Math.floor(r.length / 2)])) : null;
+    // Qualité adaptative : seulement quand l'image arrive (pas pendant une attente ou une reconnexion).
+    if (this.enLecture && this.hotePresent) {
+      const avant = this.adaptation.couche;
+      if (this.adaptation.seconde({ image, jetees: this.jetees, ips: this.images }) !== avant) this.changerCouche();
+    }
     this.surMesures({
-      relais: this.relaisActif,
+      relais: this.direct?.ouvert ? 'direct (P2P)' : this.relaisActif,
       ips: this.images,
-      image: r.length && this.horloge.allerRetour.length ? Math.max(0, Math.round(r[Math.floor(r.length / 2)])) : null,
+      image,
       pingPc: ping === undefined ? null : Math.round(ping),
       debit: Math.round((this.octets * 8) / 1000),
       largeur: this.canvas.width,
@@ -281,6 +385,7 @@ export class Lecteur {
       cles: this.cles,
       reconnexions: this.reconnexions,
       file: this.decodeur?.decodeQueueSize ?? 0,
+      qualite: `${this.adaptation.couche === BASSE ? '720p' : '1080p'} (${this.adaptation.choix === 'auto' ? 'auto' : 'choisie'})`,
     });
     this.images = this.octets = this.jetees = this.cles = 0;
     this.retards = this.retards.slice(-60);
@@ -288,6 +393,9 @@ export class Lecteur {
 
   private nettoyer() {
     this.enLecture = false;
+    const d = this.direct;
+    this.direct = null;
+    d?.fermer();
     for (const t of this.timers) clearInterval(t);
     this.timers = [];
     try { this.decodeur?.close(); } catch { /* déjà fermé */ }

@@ -7,6 +7,8 @@ package main
 import (
 	"errors"
 	"fmt"
+	"runtime"
+	"sync/atomic"
 	"unsafe"
 
 	"golang.org/x/sys/windows"
@@ -32,6 +34,7 @@ var (
 	ioctlCheckVersion = ctlCode(ioctlBase+0x002, accessWrite)
 	ioctlWaitReady    = ctlCode(ioctlBase+0x003, accessWrite)
 	ioctlXusbSubmit   = ctlCode(ioctlBase+0x201, accessWrite)
+	ioctlXusbNotif    = ctlCode(ioctlBase+0x200, accessRead|accessWrite)
 	ioctlXusbUserIdx  = ctlCode(ioctlBase+0x206, accessRead|accessWrite)
 )
 
@@ -57,8 +60,17 @@ type xusbSubmit struct {
 type ViGEm struct{ h windows.Handle }
 
 type Pad struct {
-	bus    *ViGEm
-	serial uint32
+	bus       *ViGEm
+	serial    uint32
+	debranche atomic.Bool
+}
+
+// xusbNotification is XUSB_REQUEST_NOTIFICATION: the driver completes it when the game changes the rumble.
+type xusbNotification struct {
+	Size, SerialNo         uint32
+	LargeMotor, SmallMotor uint8
+	LedNumber              uint8
+	_                      uint8
 }
 
 func OpenViGEm() (*ViGEm, error) {
@@ -71,7 +83,7 @@ func OpenViGEm() (*ViGEm, error) {
 	}
 	p, _ := windows.UTF16PtrFromString(paths[0])
 	h, err := windows.CreateFile(p, windows.GENERIC_READ|windows.GENERIC_WRITE,
-		windows.FILE_SHARE_READ|windows.FILE_SHARE_WRITE, nil, windows.OPEN_EXISTING, windows.FILE_ATTRIBUTE_NORMAL, 0)
+		windows.FILE_SHARE_READ|windows.FILE_SHARE_WRITE, nil, windows.OPEN_EXISTING, windows.FILE_ATTRIBUTE_NORMAL|windows.FILE_FLAG_OVERLAPPED, 0)
 	if err != nil {
 		return nil, fmt.Errorf("ouverture ViGEmBus: %w", err)
 	}
@@ -84,9 +96,34 @@ func OpenViGEm() (*ViGEm, error) {
 	return v, nil
 }
 
+// ioctl sends a request and waits for it. The handle is overlapped (like ViGEmClient) so that a pending
+// notification request (rumble) never blocks the other requests. The kernel reads and writes a heap
+// buffer, never Go stack memory (stacks can move).
 func (v *ViGEm) ioctl(code uint32, in unsafe.Pointer, inLen uint32, out unsafe.Pointer, outLen uint32) error {
-	var n uint32
-	return windows.DeviceIoControl(v.h, code, (*byte)(in), inLen, (*byte)(out), outLen, &n, nil)
+	n := max(inLen, outLen, 1)
+	buf := make([]byte, n)
+	copy(buf, unsafe.Slice((*byte)(in), inLen))
+	ev, err := windows.CreateEvent(nil, 1, 0, nil)
+	if err != nil {
+		return err
+	}
+	defer windows.CloseHandle(ev)
+	ov := &windows.Overlapped{HEvent: ev}
+	var lus uint32
+	var sortie *byte
+	if outLen > 0 {
+		sortie = &buf[0]
+	}
+	err = windows.DeviceIoControl(v.h, code, &buf[0], inLen, sortie, outLen, &lus, ov)
+	if err == windows.ERROR_IO_PENDING {
+		err = windows.GetOverlappedResult(v.h, ov, &lus, true)
+	}
+	if err == nil && outLen > 0 {
+		copy(unsafe.Slice((*byte)(out), outLen), buf[:outLen])
+	}
+	runtime.KeepAlive(ov)
+	runtime.KeepAlive(buf)
+	return err
 }
 
 func (v *ViGEm) Close() { windows.CloseHandle(v.h) }
@@ -121,8 +158,30 @@ func (p *Pad) UserIndex() (uint32, error) {
 }
 
 func (p *Pad) Unplug() error {
+	p.debranche.Store(true)
 	u := sizeSerial{Size: 8, SerialNo: p.serial}
-	return p.bus.ioctl(ioctlUnplug, unsafe.Pointer(&u), 8, nil, 0)
+	err := p.bus.ioctl(ioctlUnplug, unsafe.Pointer(&u), 8, nil, 0)
+	windows.CancelIoEx(p.bus.h, nil) // réveille la demande de vibration en attente (les autres la refont)
+	return err
+}
+
+// Vibrations calls f each time the game changes the rumble of this pad (large and small motors,
+// 0-255), until the pad is unplugged.
+func (p *Pad) Vibrations(f func(fort, faible uint8)) {
+	for !p.debranche.Load() {
+		n := xusbNotification{Size: 12, SerialNo: p.serial}
+		err := p.bus.ioctl(ioctlXusbNotif, unsafe.Pointer(&n), 12, unsafe.Pointer(&n), 12)
+		if p.debranche.Load() {
+			return
+		}
+		if err == windows.ERROR_OPERATION_ABORTED {
+			continue // annulée pour une autre manette
+		}
+		if err != nil {
+			return
+		}
+		f(n.LargeMotor, n.SmallMotor)
+	}
 }
 
 // --- Lecture XInput : sert seulement à l'auto-test (-test-manette).
@@ -138,4 +197,13 @@ func lireXInput(idx uint32) (XusbReport, bool) {
 	var st xinputState
 	r, _, _ := procXInputGetState.Call(uintptr(idx), uintptr(unsafe.Pointer(&st)))
 	return st.Gamepad, r == 0
+}
+
+var procXInputSetState = windows.NewLazySystemDLL("xinput1_4.dll").NewProc("XInputSetState")
+
+// vibrerXInput fait vibrer la manette d'un emplacement XInput (auto-test des vibrations).
+func vibrerXInput(idx uint32, gauche, droite uint16) bool {
+	v := struct{ Gauche, Droite uint16 }{gauche, droite}
+	r, _, _ := procXInputSetState.Call(uintptr(idx), uintptr(unsafe.Pointer(&v)))
+	return r == 0
 }

@@ -43,6 +43,8 @@ type Agent struct {
 	courant   *hebergement
 	jetons    chan ordreServeur // réponses du serveur aux demandes de jeton de relais
 	horsLigne time.Time         // depuis quand le serveur est injoignable (zéro si connecté)
+	// finAPrevenir : salle d'une partie arrêtée d'elle-même pendant que le serveur était injoignable.
+	finAPrevenir string
 }
 
 // sansServeurMax : sans nouvelles du serveur depuis ce temps, la partie s'arrête.
@@ -331,8 +333,26 @@ func (a *Agent) heberger(ctx context.Context, o ordreServeur, cfg Config) {
 	a.arreterHebergement("")
 	h := demarrerHebergement(ctx, o, cfg, a.deps())
 	a.mu.Lock()
-	a.courant, a.salle = h, o.Salle
+	a.courant, a.salle, a.finAPrevenir = h, o.Salle, ""
 	a.mu.Unlock()
+	// La partie s'arrête d'elle-même (capture impossible) : on l'oublie et on prévient le serveur,
+	// tout de suite ou à la prochaine connexion. (Un arrêt demandé a déjà retiré a.courant.)
+	go func() {
+		<-h.fini
+		a.mu.Lock()
+		seule := a.courant == h
+		if seule {
+			a.courant, a.salle, a.finAPrevenir = nil, "", h.salle
+		}
+		e := a.envoyer
+		a.mu.Unlock()
+		if seule && e != nil {
+			e(map[string]any{"type": "fin", "salle": h.salle})
+			a.mu.Lock()
+			a.finAPrevenir = ""
+			a.mu.Unlock()
+		}
+	}()
 }
 
 // arreterHebergement arrête la partie (seulement celle de cette salle si salle n'est pas vide).
@@ -416,8 +436,12 @@ func (a *Agent) session(ctx, partieCtx context.Context, cfg Config) error {
 		case "bienvenue":
 			a.mu.Lock()
 			a.connecte, a.envoyer, a.derniere, a.horsLigne = true, envoyer, "", time.Time{}
-			jeux, actuel, salle := a.jeux, a.jeuActuel, a.salle
+			jeux, actuel, salle, fin := a.jeux, a.jeuActuel, a.salle, a.finAPrevenir
+			a.finAPrevenir = ""
 			a.mu.Unlock()
+			if fin != "" {
+				envoyer(map[string]any{"type": "fin", "salle": fin})
+			}
 			envoyer(map[string]any{"type": "jeux", "jeux": jeux})
 			envoyer(map[string]any{"type": "jeu-en-cours", "jeu": actuel})
 			if salle != "" {

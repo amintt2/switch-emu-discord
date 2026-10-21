@@ -18,13 +18,26 @@ et jouent avec leur manette, le clavier ou des boutons tactiles.
 3. Pour les manettes de tes amis, installe [ViGEmBus](https://github.com/nefarius/ViGEmBus/releases/latest) (une fois).
 4. Dans Discord, lance l'Activité **Switch EMU** dans un salon vocal, clique **Héberger depuis mon PC**,
    choisis le jeu : l'agent lance Ryubing en plein écran.
-5. Dans Ryubing (une fois) : **Input → Player 2, 3, 4** = les manettes « Xbox 360 Controller » (branchées par
-   l'agent dans cet ordre au début de la partie). Player 1 = ta manette.
+5. Les manettes de tes amis sont reliées toutes seules dans Ryubing : Player 2, 3, 4 = J2, J3, J4
+   (l'agent l'écrit avant de lancer le jeu, avec une sauvegarde ; décochable dans sa fenêtre).
+   Player 1 = ta manette.
 
 Tes amis n'installent rien : ils lancent l'Activité, prennent une place (J2 à J4) et jouent avec leur manette,
-leur clavier, et bientôt des boutons tactiles.
+leur clavier ou les boutons tactiles (téléphone, tablette).
 
-## État actuel : vérifications avant le vrai code
+## Ce qu'il y a pendant une partie
+
+- **Image** : 1080p, ou 720p automatiquement si la connexion d'un ami peine (chacun a la sienne) ;
+  réglable à la main (« Qualité »).
+- **Son du jeu** : seulement celui de Ryubing (pas d'écho des voix Discord), volume réglable.
+- **Vibrations** : renvoyées sur la manette de l'ami (ou son téléphone avec les boutons tactiles).
+- **Menu debug** : images/s, latence, pings (PC de l'hôte et serveur) avec courbes, débit, qualité.
+- **Stabilité** : reconnexion automatique partout ; la partie continue si le serveur redémarre.
+- **Plein écran / navigateur** : « Ouvrir dans le navigateur » ouvre la même partie hors de Discord
+  (F11 pour le plein écran). Là, la vidéo passe **en direct** (P2P WebRTC) quand c'est possible :
+  moins de latence ; sinon par le relais. En direct, les deux PC voient l'adresse IP l'un de l'autre.
+
+## Prototypes et mesures
 
 | Dossier | Ce que c'est |
 |---|---|

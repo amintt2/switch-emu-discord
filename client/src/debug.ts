@@ -39,6 +39,9 @@ export class PanneauDebug {
   get ouvert() { return !this.racine.hidden; }
   set ouvert(v: boolean) { this.racine.hidden = !v; }
 
+  /** Ligne « Son » (fournie par la page). */
+  son = '…';
+
   maj(m: Mesures | null, pingServeur: number | null) {
     const valeurs = [m?.pingPc ?? null, pingServeur, m?.image ?? null];
     this.series.forEach((s, i) => { s.valeurs.push(valeurs[i]); if (s.valeurs.length > POINTS) s.valeurs.shift(); });
@@ -50,9 +53,11 @@ export class PanneauDebug {
       ['Ping PC hôte', ms(m?.pingPc), qualite(m?.pingPc, 60, 120)],
       ['Ping serveur', ms(pingServeur), qualite(pingServeur, 80, 160)],
       ['Débit', m ? `${(m.debit / 1000).toFixed(1)} Mbit/s` : '…'],
+      ['Qualité', m?.qualite || '…'],
       ['Image', m && m.largeur ? `${m.largeur}×${m.hauteur}` : '…'],
       ['Décodeur', m ? `${m.codec || '…'} (${m.decodeur}), file ${m.file}` : '…'],
       ['Sautées / clés', m ? `${m.jetees} / ${m.cles}` : '…', m && m.jetees ? 'moyen' : ''],
+      ['Son', this.son],
       ['Relais', m?.relais || '…'],
       ['Reconnexions', m ? String(m.reconnexions) : '…', m && m.reconnexions ? 'moyen' : ''],
     ];

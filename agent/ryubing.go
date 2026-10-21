@@ -14,10 +14,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
-	"unsafe"
-
-	"golang.org/x/sys/windows"
 )
 
 // idRyubing : identifiant que Ryubing (SDL3, pilote XInput) donne à la manette virtuelle d'une place.
@@ -28,7 +24,7 @@ func idRyubing(p int) string {
 }
 
 // Modèle : la configuration de manette par défaut de Ryubing (Pro Controller, disposition Xbox).
-const modeleManetteRyubing = `{"left_joycon_stick":{"joystick":"Left","invert_stick_x":false,"invert_stick_y":false,"rotate90_cw":false,"stick_button":"LeftStick"},"right_joycon_stick":{"joystick":"Right","invert_stick_x":false,"invert_stick_y":false,"rotate90_cw":false,"stick_button":"RightStick"},"deadzone_left":0.1,"deadzone_right":0.1,"range_left":1,"range_right":1,"trigger_threshold":0.5,"motion":{"motion_backend":"GamepadDriver","sensitivity":100,"gyro_deadzone":1,"enable_motion":true},"rumble":{"strong_rumble":1,"weak_rumble":1,"enable_rumble":false,"use_hdrumble":false},"led":{"enable_led":false,"turn_off_led":false,"use_rainbow":false,"led_color":0},"left_joycon":{"button_minus":"Back","button_l":"LeftShoulder","button_zl":"LeftTrigger","button_sl":"SingleLeftTrigger0","button_sr":"SingleRightTrigger0","dpad_up":"DpadUp","dpad_down":"DpadDown","dpad_left":"DpadLeft","dpad_right":"DpadRight"},"right_joycon":{"button_plus":"Start","button_r":"RightShoulder","button_zr":"RightTrigger","button_sl":"SingleLeftTrigger1","button_sr":"SingleRightTrigger1","button_x":"Y","button_b":"A","button_y":"X","button_a":"B"},"version":1,"backend":"GamepadSDL3","controller_type":"ProController","enable_dynamic_gamepad_swap":false}`
+const modeleManetteRyubing = `{"left_joycon_stick":{"joystick":"Left","invert_stick_x":false,"invert_stick_y":false,"rotate90_cw":false,"stick_button":"LeftStick"},"right_joycon_stick":{"joystick":"Right","invert_stick_x":false,"invert_stick_y":false,"rotate90_cw":false,"stick_button":"RightStick"},"deadzone_left":0.1,"deadzone_right":0.1,"range_left":1,"range_right":1,"trigger_threshold":0.5,"motion":{"motion_backend":"GamepadDriver","sensitivity":100,"gyro_deadzone":1,"enable_motion":true},"rumble":{"strong_rumble":1,"weak_rumble":1,"enable_rumble":true,"use_hdrumble":false},"led":{"enable_led":false,"turn_off_led":false,"use_rainbow":false,"led_color":0},"left_joycon":{"button_minus":"Back","button_l":"LeftShoulder","button_zl":"LeftTrigger","button_sl":"SingleLeftTrigger0","button_sr":"SingleRightTrigger0","dpad_up":"DpadUp","dpad_down":"DpadDown","dpad_left":"DpadLeft","dpad_right":"DpadRight"},"right_joycon":{"button_plus":"Start","button_r":"RightShoulder","button_zr":"RightTrigger","button_sl":"SingleLeftTrigger1","button_sr":"SingleRightTrigger1","button_x":"Y","button_b":"A","button_y":"X","button_a":"B"},"version":1,"backend":"GamepadSDL3","controller_type":"ProController","enable_dynamic_gamepad_swap":false}`
 
 // cheminConfigRyubing : dossier « portable » à côté de Ryujinx.exe s'il existe, sinon %APPDATA%\Ryujinx.
 func cheminConfigRyubing(exe string) string {
@@ -65,7 +61,10 @@ func relierManettes(brut []byte) ([]byte, bool, error) {
 		}
 		json.Unmarshal(e, &t)
 		if t.Joueur == "Player2" || t.Joueur == "Player3" || t.Joueur == "Player4" {
-			deja[t.Joueur] = t.ID
+			var tout map[string]any
+			json.Unmarshal(e, &tout)
+			b, _ := json.Marshal(tout) // forme canonique (clés triées) pour comparer
+			deja[t.Joueur] = string(b)
 			continue
 		}
 		garder = append(garder, e)
@@ -78,7 +77,7 @@ func relierManettes(brut []byte) ([]byte, bool, error) {
 		e["id"], e["name"], e["player_index"] = idRyubing(p), fmt.Sprintf("Switch EMU J%d", p), joueur
 		b, _ := json.Marshal(e)
 		garder = append(garder, b)
-		if deja[joueur] != idRyubing(p) {
+		if deja[joueur] != string(b) {
 			change = true
 		}
 	}
@@ -123,17 +122,6 @@ func configurerRyubing(exe string) error {
 
 // ryubingOuvert : Ryujinx.exe tourne déjà (il réécrirait sa configuration en partant).
 func ryubingOuvert() bool {
-	snap, err := windows.CreateToolhelp32Snapshot(windows.TH32CS_SNAPPROCESS, 0)
-	if err != nil {
-		return false
-	}
-	defer windows.CloseHandle(snap)
-	var e windows.ProcessEntry32
-	e.Size = uint32(unsafe.Sizeof(e))
-	for err = windows.Process32First(snap, &e); err == nil; err = windows.Process32Next(snap, &e) {
-		if strings.EqualFold(windows.UTF16ToString(e.ExeFile[:]), "Ryujinx.exe") {
-			return true
-		}
-	}
-	return false
+	p, _ := trouverRyubing()
+	return p != 0
 }

@@ -7,9 +7,11 @@
 import { verifier } from './jetons.js';
 
 const MAX_AMIS = 16;
-const MAX_TEXTE = 4096;
-const TYPES_AMI = new Set(['ping', 'idr', 'qualite', 'manette']);
+const MAX_TEXTE = 16384;  // une offre WebRTC (connexion directe) avec ses candidats
+const TYPES_AMI = new Set(['ping', 'idr', 'qualite', 'manette', 'pause', 'offre']);
 const BATTEMENT = JSON.stringify({ type: 'battement' });
+const DEST_COUCHE = 0xFFFFFF00;  // + q : les amis qui regardent la couche vidéo q (0 = 1080p, 1 = 720p)
+const NB_COUCHES = 2;
 
 export class Salle {
   constructor(state) {
@@ -17,6 +19,8 @@ export class Salle {
     this.hote = null;
     this.amis = new Map();
     this.uids = new Map();  // id de connexion -> uid Discord (pour retirer quelqu'un)
+    this.couches = new Map();  // id de connexion -> couche vidéo regardée
+    this.pauses = new Set();   // connexions qui reçoivent la vidéo en direct (P2P)
     this.suivant = 1;
   }
 
@@ -50,6 +54,7 @@ export class Salle {
     const id = this.suivant++;
     this.amis.set(id, ws);
     this.uids.set(id, uid);
+    this.couches.set(id, 0);
     this.versHote({ type: 'arrivee', de: id, uid });
     if (!this.hote) ws.send(JSON.stringify({ type: 'pas-d-hote' }));
     ws.addEventListener('message', (e) => {
@@ -59,11 +64,17 @@ export class Salle {
       // Battement : le relais répond lui-même (la page sait ainsi que la connexion est vivante).
       if (m?.type === 'battement') { try { ws.send(BATTEMENT); } catch {} return; }
       if (!m || !TYPES_AMI.has(m.type)) return;
+      if (m.type === 'qualite') {
+        if (!Number.isInteger(m.q) || m.q < 0 || m.q >= NB_COUCHES) return;
+        this.couches.set(id, m.q);
+      }
+      // L'ami reçoit la vidéo en direct (P2P) : on ne lui envoie plus d'images (le texte continue).
+      if (m.type === 'pause') { if (m.p === true) this.pauses.add(id); else this.pauses.delete(id); }
       m.de = id;
       m.uid = uid;
       this.versHote(m);
     });
-    ws.addEventListener('close', () => { this.amis.delete(id); this.uids.delete(id); this.versHote({ type: 'depart', de: id }); });
+    ws.addEventListener('close', () => { this.amis.delete(id); this.uids.delete(id); this.couches.delete(id); this.pauses.delete(id); this.versHote({ type: 'depart', de: id }); });
   }
 
   versHote(m) {
@@ -71,9 +82,13 @@ export class Salle {
   }
 
   depuisHote(d) {
-    const envoyer = (a, charge) => {
-      const cibles = a ? [this.amis.get(a)] : [...this.amis.values()];
-      for (const w of cibles) try { w?.send(charge); } catch {}
+    const envoyer = (a, charge, binaire = false) => {
+      const ids = a >= DEST_COUCHE ? [...this.amis.keys()].filter((id) => this.couches.get(id) === a - DEST_COUCHE)
+        : a ? [a] : [...this.amis.keys()];
+      for (const id of ids) {
+        if (binaire && this.pauses.has(id)) continue;  // il reçoit la vidéo en direct
+        try { this.amis.get(id)?.send(charge); } catch {}
+      }
     };
     if (typeof d === 'string') {
       let m;
@@ -88,7 +103,7 @@ export class Salle {
       delete m.a;
       envoyer(a, JSON.stringify(m));
     } else if (d instanceof ArrayBuffer && d.byteLength > 4) {
-      envoyer(new DataView(d).getUint32(0, true), d.slice(4));
+      envoyer(new DataView(d).getUint32(0, true), d.slice(4), true);
     }
   }
 }

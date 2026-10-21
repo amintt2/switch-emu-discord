@@ -7,6 +7,8 @@ export interface Identite {
   sdk: DiscordSDK | null;
 }
 
+const CLE_ONGLET = 'switch-emu.session';
+
 /** Discord ajoute frame_id (entre autres) à l'adresse de l'Activité. */
 export function dansDiscord() {
   return new URLSearchParams(location.search).has('frame_id');
@@ -16,6 +18,7 @@ export async function seConnecter(): Promise<Identite> {
   const cfg = await api<{ clientId: string | null; browserMode: boolean }>('/api/config');
 
   // « Ouvrir dans le navigateur » depuis l'Activité : un lien à usage unique, valable 2 minutes.
+  // La session est gardée dans cet onglet seulement (sessionStorage) pour survivre à F5.
   const passage = new URLSearchParams(location.search).get('passage');
   if (passage && !dansDiscord()) {
     history.replaceState(null, '', location.pathname);  // le lien ne sert qu'une fois : on l'efface de l'adresse
@@ -24,7 +27,23 @@ export async function seConnecter(): Promise<Identite> {
       body: JSON.stringify({ passage }),
     });
     setSession(res.session);
+    try { sessionStorage.setItem(CLE_ONGLET, res.session); } catch { /* stockage indisponible */ }
     return { user: res.user, mode: 'navigateur', sdk: null };
+  }
+  if (!dansDiscord()) {
+    let gardee: string | null = null;
+    try { gardee = sessionStorage.getItem(CLE_ONGLET); } catch { /* stockage indisponible */ }
+    if (gardee) {
+      setSession(gardee);
+      try {
+        const { user } = await api<{ user: Utilisateur }>('/api/moi');
+        return { user, mode: 'navigateur', sdk: null };
+      } catch (e) {
+        try { sessionStorage.removeItem(CLE_ONGLET); } catch { /* idem */ }
+        setSession('');
+        if (!cfg.browserMode) throw e;
+      }
+    }
   }
 
   if (dansDiscord()) {

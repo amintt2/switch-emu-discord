@@ -17,6 +17,8 @@ export class EnvoiManette {
   /** Quand l'assistant de réglage écoute la manette, on n'envoie rien au jeu. */
   enPause = false;
   manettes: ManetteVue[] = [];
+  /** Une autre source (la manette tactile), ajoutée au clavier et aux manettes. */
+  sourceExtra: () => EtatManette = () => REPOS;
   /** Vrai quand le joueur a une place (sinon il est spectateur : rien n'est envoyé). */
   peutJouer: () => boolean = () => true;
   /** Appelé quand un spectateur touche sa manette : on peut lui proposer une place (au plus toutes les 3 s). */
@@ -80,6 +82,7 @@ export class EnvoiManette {
       this.surChangement();
     }
     if (this.enPause) return;
+    sources.push(this.sourceExtra());
     const etat = fusionner(...sources);
     if (!this.peutJouer()) {
       // Spectateur : on n'envoie rien. S'il touche sa manette, on peut lui proposer une place.
