@@ -4,8 +4,11 @@
 // J1 revient à l'hôte quand il commence à héberger (il joue sur son PC) ; il peut la laisser à un ami.
 // Les autres participants sont spectateurs.
 
-// Tests d'endurance : tous les délais sont réduits du même facteur (SWITCHEMU_ECHELLE_DELAIS, 1 en vrai).
-export const ECHELLE_DELAIS = Number(process.env.SWITCHEMU_ECHELLE_DELAIS) > 0 ? Number(process.env.SWITCHEMU_ECHELLE_DELAIS) : 1;
+// Tests d'endurance : tous les délais sont réduits du même facteur (SWITCHEMU_ECHELLE_DELAIS), seulement en
+// mode essai (SWITCHEMU_MODE_ESSAI=1 et ALLOW_BROWSER_MODE=1) et entre 0,01 et 1. En production : 1.
+const echelleDemandee = Number(process.env.SWITCHEMU_ECHELLE_DELAIS);
+export const ECHELLE_DELAIS = process.env.SWITCHEMU_MODE_ESSAI === '1' && process.env.ALLOW_BROWSER_MODE === '1'
+  && Number.isFinite(echelleDemandee) && echelleDemandee >= 0.01 && echelleDemandee <= 1 ? echelleDemandee : 1;
 export const DELAI_DEPART_HOTE_MS = 90_000 * ECHELLE_DELAIS;  // une coupure de la box de l'hôte ne termine pas la partie
 export const DELAI_PLACE_MS = 120_000 * ECHELLE_DELAIS;       // une place est gardée 2 min à quelqu'un qui s'est déconnecté
 export const DUREE_EXCLUSION_MS = 10 * 60_000;

@@ -26,6 +26,7 @@ const app = Fastify({
   trustProxy: true,
 });
 assertConfig(app.log);
+if (ECHELLE_DELAIS !== 1) app.log.warn({ echelle: ECHELLE_DELAIS }, 'mode essai : délais réduits');
 await app.register(fastifyWebsocket, { options: { maxPayload: 1 << 20 } });
 
 const agents = new Agents({ secret: config.agentSecret });

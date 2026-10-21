@@ -6,19 +6,21 @@ import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
+import { createServer } from 'node:net';
 import { fileURLToPath } from 'node:url';
 import WebSocket from 'ws';
 
 const ECHELLE = 0.05;
 const DELAI_AGENT_MS = 90_000 * ECHELLE;      // comme le serveur
-const PORT = 3300 + Math.floor(Math.random() * 600);
+// Un port libre, donné par le système.
+const PORT = await new Promise((r) => { const s = createServer().listen(0, '127.0.0.1', () => { const p = s.address().port; s.close(() => r(p)); }); });
 const B = `http://127.0.0.1:${PORT}`;
 const WS = `ws://127.0.0.1:${PORT}`;
 const SALLE = 'endurance';
 const ENV = {
   ...process.env, PORT: String(PORT), HOST: '127.0.0.1', PUBLIC_URL: B, RELAIS_CF_URL: 'off', ALLOW_BROWSER_MODE: '1',
   SESSION_SECRET: 'endurance-session-0123456789', AGENT_SECRET: 'endurance-agent-0123456789',
-  RELAY_SECRET: 'endurance-relais-0123456789', DISCORD_CLIENT_ID: 'x', SWITCHEMU_ECHELLE_DELAIS: String(ECHELLE),
+  RELAY_SECRET: 'endurance-relais-0123456789', DISCORD_CLIENT_ID: 'x', SWITCHEMU_ECHELLE_DELAIS: String(ECHELLE), SWITCHEMU_MODE_ESSAI: '1',
   LOG_LEVEL: 'warn',
 };
 
@@ -35,14 +37,19 @@ async function jusqua(cond, ms, quoi) {
 // ------------------------------------------------------------------ le serveur
 let serveur = null;
 async function demarrerServeur() {
-  serveur = spawn(process.execPath, [fileURLToPath(new URL('../src/index.js', import.meta.url))], { env: ENV, stdio: ['ignore', 'ignore', 'inherit'] });
-  await jusqua(async () => { try { return (await fetch(`${B}/api/config`)).ok; } catch { return false; } }, 10_000, 'serveur démarré');
+  const s = serveur = spawn(process.execPath, [fileURLToPath(new URL('../src/index.js', import.meta.url))], { env: ENV, stdio: ['ignore', 'ignore', 'inherit'] });
+  s.on('error', () => {});
+  await jusqua(async () => {
+    if (s.exitCode !== null) assert.fail(`le serveur s'est arrêté au démarrage (code ${s.exitCode})`);
+    try { return (await fetch(`${B}/api/config`)).ok; } catch { return false; }
+  }, 10_000, 'serveur démarré');
 }
 async function arreterServeur() {
-  if (!serveur) return;
-  serveur.kill();
-  await once(serveur, 'exit');
+  const s = serveur;
   serveur = null;
+  if (!s || s.exitCode !== null) return;
+  s.kill();
+  await Promise.race([once(s, 'exit'), pause(5000).then(() => s.kill('SIGKILL'))]);
 }
 
 async function session(nom) {
@@ -102,7 +109,7 @@ class FauxSpectateur {
 
 // ------------------------------------------------------------------ un faux agent (même protocole que agent/)
 class FauxAgent {
-  constructor() { this.salle = ''; this.actif = true; this.ordres = []; }
+  constructor() { this.salle = ''; this.actif = true; this.ordres = []; this.generation = 0; this.minuteur = null; }
   async jumeler(hote) {
     const { code, secret } = await (await fetch(`${B}/api/agent/jumelage`, { method: 'POST' })).json();
     await fetch(`${B}/api/jumelage`, { method: 'POST', headers: { 'content-type': 'application/json', authorization: `Bearer ${hote.session}` }, body: JSON.stringify({ code }) });
@@ -111,14 +118,18 @@ class FauxAgent {
     await jusqua(() => this.connecte, 5000, 'agent connecté');
     return this;
   }
+  // Une seule connexion à la fois (comme l'agent) : celles d'avant ne déclenchent plus rien.
   connecter(essai) {
     if (!this.actif) return;
+    clearTimeout(this.minuteur);
+    const generation = ++this.generation;
     const ws = this.ws = new WebSocket(`${WS}/api/agent`, { headers: { authorization: `Bearer ${this.jeton}`, 'x-agent-version': 'endurance' } });
-    ws.on('message', (d) => this.surOrdre(JSON.parse(d)));
+    ws.on('message', (d) => generation === this.generation && this.surOrdre(JSON.parse(d)));
     ws.on('error', () => {});
     ws.on('close', () => {
+      if (generation !== this.generation) return;
       this.connecte = false;
-      setTimeout(() => this.connecter(essai + 1), Math.min(1000, 100 * 2 ** essai));
+      this.minuteur = setTimeout(() => this.connecter(essai + 1), Math.min(1000, 100 * 2 ** essai));
     });
   }
   envoyer(m) { if (this.ws?.readyState === 1) this.ws.send(JSON.stringify(m)); }
@@ -165,7 +176,7 @@ class FauxAgent {
     });
   }
   /** Coupure réseau : plus rien ne passe (et pas de reconnexion) jusqu'à reprendre(). */
-  couper() { this.actif = false; this.ws?.terminate(); this.relais?.terminate(); }
+  couper() { this.actif = false; clearTimeout(this.minuteur); this.generation++; this.ws?.terminate(); this.relais?.terminate(); }
   /** Le réseau revient : l'agent se reconnecte en hébergeant toujours sa partie. */
   reprendre() { this.actif = true; this.connecter(0); this.brancherRelais(); }
   /** L'agent redémarre (mise à jour, plantage) : il a tout oublié. */

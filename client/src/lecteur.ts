@@ -39,6 +39,7 @@ const RELANCE_CLE_MS = 1000;      // image clé redemandée chaque seconde tant 
 const AGE_MAX_JETON_MS = 4 * 60_000;
 const DIRECT_APRES_MS = 2000;     // hors Discord : connexion directe tentée 2 s après la connexion au PC de l'hôte
 const SILENCE_DIRECT_MS = 3000;   // plus rien en direct : retour par le relais
+const SANS_COUCHE_MS = 10_000;     // une couche demandée qui n'envoie rien pendant ce temps n'existe pas
 const FILE_MAX = 3;               // au-delà, le décodeur ne suit pas : on saute à la prochaine image clé
 
 const pause = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -98,6 +99,20 @@ export class Lecteur {
   /** Couche vidéo voulue : la VP8 si le H.264 manque, sinon celle de l'adaptation. */
   private get couche() { return this.compat ? COMPAT : this.adaptation.couche; }
 
+  /** La couche demandée n'a rien envoyé : retour au 1080p H.264 si possible, sinon on explique. */
+  private coucheMuette() {
+    this.diag('couche-muette', { q: this.couche, compat: this.compat });
+    if (this.compat && !(this.codecs.avc1080 || this.codecs.avc720)) {
+      this.changementCouche = Date.now();  // pas de boucle : on ne le redit pas tout de suite
+      this.surEtat('erreur', 'Le PC de l’hôte n’envoie pas la vidéo compatible avec ton lecteur : il doit mettre son agent à jour. En attendant, « Ouvrir dans le navigateur ».');
+      return;
+    }
+    this.compat = this.compatChoisie = false;
+    this.hoteSansCouches = true;  // une seule couche de l'autre côté : plus d'adaptation
+    this.adaptation.definir('1080');
+    this.changerCouche();
+  }
+
   /** Le H.264 ne passe pas ici : on demande la couche VP8 (720p, encodée par le PC de l'hôte). */
   private passerCompat(raison: string) {
     if (this.compat) return;
@@ -127,10 +142,11 @@ export class Lecteur {
   }
 
   private compatChoisie = false;  // la personne a choisi « Compatibilité » (sinon : imposée faute de H.264)
+  private derniereImageVoulue = 0; // dernière image de la couche voulue (pour repérer une couche qui n'existe pas)
 
   /** Qualité vidéo : automatique, forcée (1080p / 720p), ou compatibilité (VP8). */
   definirQualite(choix: Choix | 'compat') {
-    if (this.hoteSansCouches) return;
+    if (this.hoteSansCouches && choix === 'compat') return;  // le PC de l'hôte n'a qu'une couche
     if (choix === 'compat') {
       this.compatChoisie = true;
       if (this.codecs.vp8 !== false) this.passerCompat('choisie');
@@ -255,6 +271,9 @@ export class Lecteur {
             // Connexion morte (Wi-Fi coupé, relais redémarré) : on la ferme pour repartir tout de suite.
             if (this.battementSansReponse && Date.now() - this.battementSansReponse > SILENCE_MAX_MS) { mort = true; ws.close(); return; }
             if (this.attendreCle && this.hotePresent && Date.now() - this.derniereDemandeCle > RELANCE_CLE_MS) this.demanderCle();
+            // La couche demandée n'envoie rien (agent pas à jour, encodeur VP8 en panne…) : on se replie.
+            if (this.couche !== 0 && this.hotePresent && Date.now() - this.changementCouche > SANS_COUCHE_MS
+              && this.derniereImageVoulue < this.changementCouche) this.coucheMuette();
             // Connexion directe (hors Discord) : tentée quand l'image arrive bien, abandonnée si elle se tait.
             if (this.direct?.ouvert && this.pingDirectSansReponse && Date.now() - this.pingDirectSansReponse > SILENCE_DIRECT_MS) this.direct.fermer();
             if (!this.dansDiscord && !this.direct && typeof RTCPeerConnection !== 'undefined' && this.hotePresent
@@ -382,13 +401,17 @@ export class Lecteur {
     this.hotePresent = true;
     this.octets += buf.byteLength;
     if (img.son) { this.surSon(img.donnees); return; }
+    if (img.qualite === this.couche) this.derniereImageVoulue = Date.now();
     if (img.qualite !== this.couche) {
       if (Date.now() - this.changementCouche < 3000) return;  // image de l'autre couche, juste après un changement
       // Toujours l'autre couche : le PC de l'hôte n'en a qu'une (agent pas encore à jour). On la prend.
       this.hoteSansCouches = true;
       if (this.compat) {
-        this.surEtat('erreur', 'Le PC de l’hôte n’envoie pas encore la vidéo compatible avec ton lecteur : il doit mettre son agent à jour. En attendant, « Ouvrir dans le navigateur ».');
-        return;
+        if (!this.compatChoisie || !(this.codecs.avc1080 || this.codecs.avc720)) {
+          this.surEtat('erreur', 'Le PC de l’hôte n’envoie pas encore la vidéo compatible avec ton lecteur : il doit mettre son agent à jour. En attendant, « Ouvrir dans le navigateur ».');
+          return;
+        }
+        this.compat = this.compatChoisie = false;  // choisie à la main, mais le H.264 marche ici : on le prend
       }
       this.adaptation.definir(img.qualite === BASSE ? '720' : '1080');
       this.attendreCle = !img.cle;
