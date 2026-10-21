@@ -11,7 +11,7 @@ export const TYPES_AMI = new Set(['ping', 'idr', 'qualite', 'manette', 'pause', 
 const MAX_TEXTE = 16384;  // une offre WebRTC (connexion directe) avec ses candidats
 const BATTEMENT = JSON.stringify({ type: 'battement' });
 export const DEST_COUCHE = 0xFFFFFF00;
-export const NB_COUCHES = 2;
+export const NB_COUCHES = 3;  // 1080p, 720p, VP8 (lecteurs sans H.264)
 
 export class Relais {
   constructor({ secret }) {

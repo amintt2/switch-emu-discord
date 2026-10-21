@@ -28,7 +28,8 @@ leur clavier ou les boutons tactiles (téléphone, tablette).
 ## Ce qu'il y a pendant une partie
 
 - **Image** : 1080p, ou 720p automatiquement si la connexion d'un ami peine (chacun a la sienne) ;
-  réglable à la main (« Qualité »).
+  réglable à la main (« Qualité »). Un lecteur sans H.264 (certains Discord) reçoit une version
+  « compatibilité » en VP8, encodée par le processeur de l'hôte seulement quand quelqu'un en a besoin.
 - **Son du jeu** : seulement celui de Ryubing (pas d'écho des voix Discord), volume réglable.
 - **Vibrations** : renvoyées sur la manette de l'ami (ou son téléphone avec les boutons tactiles).
 - **Menu debug** : images/s, latence, pings (PC de l'hôte et serveur) avec courbes, débit, qualité.
@@ -36,6 +37,15 @@ leur clavier ou les boutons tactiles (téléphone, tablette).
 - **Plein écran / navigateur** : « Ouvrir dans le navigateur » ouvre la même partie hors de Discord
   (F11 pour le plein écran). Là, la vidéo passe **en direct** (P2P WebRTC) quand c'est possible :
   moins de latence ; sinon par le relais. En direct, les deux PC voient l'adresse IP l'un de l'autre.
+
+## Tests
+
+- `npm test` : logique du serveur (salles, places, jetons, relais), du client (manettes, qualité,
+  son, réassemblage P2P) ; `go test ./...` dans `agent/` (manettes, mises à jour, Ryubing…).
+- **Endurance** (`serveur/test/endurance.test.js`, ~25 s, à chaque envoi) : le vrai serveur et son
+  relais, un faux agent, un faux hôte et de faux amis ; coupures courtes et longues, agent et serveur
+  redémarrés, « Arrêter » pendant une coupure, 10 s de coupures au hasard, retrait d'un ami.
+- `SwitchEMU.exe -test-manette` : manette virtuelle et vibrations sur le PC de l'hôte.
 
 ## Prototypes et mesures
 

@@ -1,8 +1,10 @@
 package main
 
-// Couches vidéo : la même image en deux qualités, chaque ami reçoit celle que permet sa connexion.
-//   haute : 1080p (réglage de capture, ~12 Mbit/s), toujours encodée ;
-//   basse : 720p ~5 Mbit/s, encodée seulement quand un ami la regarde.
+// Couches vidéo : la même image en plusieurs qualités, chaque ami reçoit celle qui lui convient.
+//   haute  : 1080p H.264 (réglage de capture, ~12 Mbit/s), toujours encodée ;
+//   basse  : 720p H.264 ~5 Mbit/s, encodée seulement quand un ami la regarde ;
+//   compat : 720p VP8 ~4 Mbit/s, encodée par le processeur, pour les lecteurs sans H.264 (certains
+//            Discord), seulement quand un ami la regarde.
 // Chaque couche est un capteur à part (Windows accepte plusieurs captures de l'écran à la fois),
 // relancé s'il s'arrête. Le relais envoie la couche q aux amis qui l'ont choisie (destination destCouche+q).
 
@@ -14,25 +16,29 @@ import (
 )
 
 const (
-	coucheHaute = 0
-	coucheBasse = 1
-	nbCouches   = 2
+	coucheHaute  = 0
+	coucheBasse  = 1
+	coucheCompat = 2
+	nbCouches    = 3
 
 	destCouche = 0xFFFFFF00 // + couche : tous les amis de cette couche (le relais trie)
 
 	kbpsBasse         = 5000
+	kbpsCompat        = 4000
 	arretBasseApres   = 30 * time.Second // couche basse arrêtée quand plus personne ne la regarde
 	relancesMaxParMin = 4
 )
 
 // captureCouche : réglages du capteur d'une couche.
 func captureCouche(base Capture, q int) Capture {
-	if q == coucheBasse {
-		c := base
+	c := base
+	switch q {
+	case coucheBasse:
 		c.Largeur, c.Hauteur, c.Kbps = 1280, 720, kbpsBasse
-		return c
+	case coucheCompat:
+		c.Largeur, c.Hauteur, c.Kbps, c.Codec = 1280, 720, kbpsCompat, "libvpx"
 	}
-	return base
+	return c
 }
 
 type imageCouche struct {

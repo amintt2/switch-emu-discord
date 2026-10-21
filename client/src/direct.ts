@@ -1,11 +1,11 @@
 // Connexion directe (P2P, WebRTC) avec le PC de l'hôte, hors de Discord seulement (Discord bloque
 // WebRTC dans les Activités). La négociation passe par le relais. Canaux :
 //   « ctrl »  : fiable, mêmes messages que par le relais (ping, idr, qualite, manette) ;
-//   « video » : non ordonné, abandon après 80 ms ; images découpées en morceaux
-//               [u32 n° (bit 31 = son)][u16 morceau][u16 nombre][données].
+//   « video » : fiable et ordonné (un morceau perdu est renvoyé, ça coûte un aller-retour) ; images
+//               découpées en morceaux [u32 n° (bit 31 = son)][u16 morceau][u16 nombre][données].
+//               Le PC de l'hôte ne laisse jamais le retard s'accumuler (il saute des images et le dit).
 
 export const SERVEURS_STUN = ['stun:stun.cloudflare.com:3478', 'stun:stun.l.google.com:19302'];
-const DUREE_VIE_MS = 80;
 
 /** Remet les morceaux bout à bout ; signale une image perdue (le décodeur devra repartir d'une image clé). */
 export class Assembleur {
@@ -71,7 +71,7 @@ export class Direct {
   constructor(surPaquet: (b: ArrayBuffer) => void, surTexte: (t: string) => void, surPerte: () => void) {
     this.pc = new RTCPeerConnection({ iceServers: [{ urls: SERVEURS_STUN }] });
     this.ctrl = this.pc.createDataChannel('ctrl');
-    this.video = this.pc.createDataChannel('video', { ordered: false, maxPacketLifeTime: DUREE_VIE_MS });
+    this.video = this.pc.createDataChannel('video');
     this.video.binaryType = 'arraybuffer';
     this.assembleur = new Assembleur(surPaquet, surPerte);
     this.video.onmessage = (e) => { this.dernierMessage = Date.now(); this.assembleur.recevoir(e.data); };

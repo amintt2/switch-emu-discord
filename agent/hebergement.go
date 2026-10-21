@@ -169,7 +169,7 @@ type resultatP2P struct {
 
 const (
 	negociationsMax = 3               // en même temps, tous amis confondus
-	entreOffres     = 5 * time.Second // par personne
+	entreOffres     = 2 * time.Second // par personne (une page rechargée repasse vite en direct)
 )
 
 func (d *diffusion) demanderIDR(q int) {
@@ -320,6 +320,8 @@ func (h *hebergement) tourner(ctx context.Context, o ordreServeur, cfg Config, d
 	defer mesure.Stop()
 	entretien := time.NewTicker(5 * time.Second)
 	defer entretien.Stop()
+	relanceDirects := time.NewTicker(200 * time.Millisecond)
+	defer relanceDirects.Stop()
 	dernieres := 0
 	var clesAvant [nbCouches]int
 	for {
@@ -400,16 +402,28 @@ func (h *hebergement) tourner(ctx context.Context, o ordreServeur, cfg Config, d
 			diff.demanderIDR(int(p.couche.Load()))
 		case p := <-finDirect:
 			delete(directs, p)
+		case <-relanceDirects.C:
+			// Image sautée sur un écran devenu immobile : la file vidée, on redemande l'image clé nous-mêmes.
+			for p := range directs {
+				if p.relancerCle() {
+					diff.demanderIDR(int(p.couche.Load()))
+				}
+			}
 		case <-diff.besoin:
-			if regardee(coucheBasse) > 0 {
-				diff.couches[coucheBasse].demarrer(ctx, sortie, func() { log.Printf("couche 720p abandonnée") })
+			for q := coucheBasse; q < nbCouches; q++ {
+				if regardee(q) > 0 {
+					diff.couches[q].demarrer(ctx, sortie, func() { log.Printf("couche %d abandonnée", q) })
+				}
 			}
 		case <-entretien.C:
-			// La couche basse ne tourne que si quelqu'un la regarde.
-			b := diff.couches[coucheBasse]
-			if b.enMarche() {
+			// Les couches 720p et VP8 ne tournent que si quelqu'un les regarde.
+			for q := coucheBasse; q < nbCouches; q++ {
+				b := diff.couches[q]
+				if !b.enMarche() {
+					continue
+				}
 				b.mu.Lock()
-				if regardee(coucheBasse) > 0 {
+				if regardee(q) > 0 {
 					b.inutile = time.Time{}
 				} else if b.inutile.IsZero() {
 					b.inutile = time.Now()
@@ -417,7 +431,7 @@ func (h *hebergement) tourner(ctx context.Context, o ordreServeur, cfg Config, d
 				arreter := !b.inutile.IsZero() && time.Since(b.inutile) > arretBasseApres
 				b.mu.Unlock()
 				if arreter {
-					log.Printf("couche 720p : plus personne ne la regarde, arrêt")
+					log.Printf("couche %d : plus personne ne la regarde, arrêt", q)
 					b.arreter()
 				}
 			}
